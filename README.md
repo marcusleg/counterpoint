@@ -1,12 +1,15 @@
 # Counterpoint
 
-A Markdown editor for LLM-assisted writing of blog articles and social media posts, written in
-Rust with GTK 4 and libadwaita.
+A Markdown editor for writing blog articles and social media posts with an LLM at your side.
+Highlight a passage and choose how the model helps:
 
-You edit the Markdown source directly, styled in place by GtkSourceView: headings, emphasis,
-code, links, front matter and HTML comments are highlighted. Files are saved exactly as you edit
-them, so opening and saving a file without changes leaves it byte-for-byte identical. The window
-follows GNOME's light or dark style.
+- **Sparring:** it reads your draft and pushes back: weak arguments, unclear sentences, missing
+  points. Your text stays untouched.
+- **Ghostwriting:** it proposes concrete edits. Review the before/after preview, then apply or
+  reject; an applied change is a single undo step.
+
+Counterpoint works with any OpenAI-compatible endpoint, local (Ollama, llama.cpp) or hosted, and
+saves your Markdown exactly as you wrote it. Built with Rust, GTK 4 and libadwaita.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark.png">
@@ -14,20 +17,6 @@ follows GNOME's light or dark style.
   selected. The chat pane shows a sparring reply that critiques the paragraph, and a
   ghostwriting proposal that shortens it to one sentence, with Apply and Reject buttons.">
 </picture>
-
-Highlight text, then chat with an LLM about it in one of two modes:
-
-- **Sparring:** the LLM reads the document and critiques it. It cannot change the document.
-- **Ghostwriting:** the LLM proposes a change as one or more edits. Review the before/after
-  preview and click **Apply** or **Reject**. An applied change is selected in the editor and can
-  be undone from the toast or with Ctrl+Z; it is a single undo step.
-
-The chat pane can be hidden (F9) to write in peace, and collapses over the editor in a narrow
-window. **Stop** abandons a request that takes too long and gives you the message back.
-
-Files open from the command line (`counterpoint post.md`), from a file manager, by dragging
-them onto the editor, or with **Open** in the header bar. If a file changes on disk while it is
-open, saving asks before overwriting those changes.
 
 ## Install
 
@@ -46,8 +35,7 @@ x86_64:
   The bundle does not update itself. To update, install the next release's bundle with
   `--reinstall` added; your settings are kept. Inside the sandbox, Counterpoint can reach the
   network but sees only the files you open, save, drop on the editor or open from a file
-  manager. Its settings and state live under `~/.var/app/de.marcusleg.Counterpoint/` instead of
-  the paths named below.
+  manager.
 
 - An **RPM** for the current Fedora release and the one before it (Fedora 44 and 43):
 
@@ -55,34 +43,7 @@ x86_64:
   sudo dnf install ./counterpoint-<version>-1.x86_64.rpm
   ```
 
-To build from source instead, see [Build and run](#build-and-run).
-
-## Requirements
-
-- Rust 1.92 or newer
-- GTK 4.18 or newer, libadwaita 1.8 or newer and GtkSourceView 5.12 or newer, with development
-  files (Fedora: `sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel`)
-- An OpenAI-compatible chat completions endpoint (for example Ollama, llama.cpp, or a hosted provider)
-
-## Configuration
-
-Open **Preferences** in the main menu (☰) to connect to an OpenAI-compatible endpoint:
-
-- **Base URL**, for example `http://localhost:11434/v1` for Ollama (the default).
-- **API key**, optional; sent as a bearer token.
-- **Model**, picked from the endpoint's model list (`GET /models`, loaded when the dialog opens
-  or on refresh) or typed in.
-
-The base URL must be `http://` or `https://` without a query, fragment or user name; secrets
-belong in the API key field. The dialog warns when the key would travel over plain HTTP to
-another machine. The model list is also refreshed when you leave the URL or key field.
-
-Settings are stored in `~/.config/counterpoint/settings.json` (or under `$XDG_CONFIG_HOME`),
-readable only by you. Changes apply to the next chat message.
-
-The folder of the last file you opened or saved and the editor zoom level are remembered in
-`~/.local/state/counterpoint/state.json` (or under `$XDG_STATE_HOME`), also readable only by
-you.
+To build from source instead, see [Build from source](#build-from-source).
 
 ## Privacy
 
@@ -94,46 +55,20 @@ The model is told to treat the document as the writer's material rather than as 
 but a document you did not write can still contain text that steers the model. Read a proposal
 before applying it, as you would anyway.
 
-## Build and run
+## Build from source
+
+You need Rust 1.92 or newer, plus GTK 4.18, libadwaita 1.8 and GtkSourceView 5.12 or newer with
+their development files:
 
 ```sh
+sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel   # Fedora
 cargo run --release
 ```
 
-To try the editor without a real model, start the mock server in another terminal, run the
-editor, and in **Preferences** set the base URL to `http://127.0.0.1:8765/v1` and pick a model:
-
-```sh
-python3 dev/mock_llm_server.py
-cargo run
-```
-
-`mock` answers Sparring with plain text and Ghostwriting with a proposal that shouts the first
-two long lines. The other models exercise failure paths, for example `mock-stale` (an edit that
-no longer matches), `mock-error-500`, `mock-malformed` and `mock-slow` (a five-second reply to
-try **Stop**); the script's docstring lists them all.
-
-## Keyboard
-
-| Keys              | Action                                   |
-|-------------------|------------------------------------------|
-| Ctrl+N            | New document                             |
-| Ctrl+O            | Open                                     |
-| Ctrl+S            | Save                                     |
-| Ctrl+Shift+S      | Save As                                  |
-| F9                | Show or hide the chat pane               |
-| Ctrl+,            | Preferences                              |
-| Ctrl+?            | Keyboard shortcuts                       |
-| Ctrl+Q            | Quit                                     |
-| Ctrl+Z            | Undo (an applied proposal is one step)   |
-| Ctrl+Shift+Z      | Redo                                     |
-| Ctrl++, Ctrl+=    | Zoom in the editor text                  |
-| Ctrl+-            | Zoom out the editor text                 |
-| Ctrl+0            | Reset the editor zoom                    |
-| Enter, Ctrl+Enter | Send chat message                        |
-| Shift+Enter       | New line in the chat input               |
-
-The zoom controls are in the main menu (☰).
+To try it without a real model, run `python3 dev/mock_llm_server.py` and set the base URL in
+**Preferences** to `http://127.0.0.1:8765/v1`. The model `mock` answers both modes; the others
+(`mock-stale`, `mock-error-500`, `mock-slow`, …) exercise failure paths and are listed in the
+script's docstring.
 
 ## Development checks
 
@@ -143,41 +78,21 @@ cargo clippy --all-targets -- -D warnings
 dev/headless.sh cargo test
 ```
 
-`dev/headless.sh` runs a command against a private GTK Broadway display (`gtk4-broadwayd`, part
-of Fedora's `gtk4` package) on a private session bus (`dbus-run-session`, package
-`dbus-daemon`), so no window appears on your desktop and nothing touches your settings. It
-needs `XDG_RUNTIME_DIR` and `git`, and makes GLib criticals fatal so the tests catch them.
+`dev/headless.sh` runs the tests on a private GTK Broadway display and session bus, so no window
+appears and your settings stay untouched. It needs `XDG_RUNTIME_DIR`, `gtk4-broadwayd` (Fedora
+package `gtk4`) and `dbus-run-session` (`dbus-daemon`). Without a display, the GTK tests print
+`SKIPPED: no display`. CI runs the same checks in a Fedora container.
 
-`cargo test` runs the unit tests of the pure modules plus three integration tests:
-
-- `tests/gtk_editor.rs` checks the editor buffer: every Markdown file in the repository and in
-  `tests/fixtures/` must survive loading and saving byte for byte, loading must leave nothing to
-  undo, an applied proposal must be exactly one undo step, zoom must be per editor, and chat
-  markup from a hostile model must render as plain text.
-- `tests/gtk_window.rs` drives the real main window: the chat pane and its empty state, the
-  primary menu and zoom, the unsaved-changes and overwrite dialogs, opening and saving files
-  (CRLF preserved, failures reported), and a chat round trip against a mock endpoint covering
-  sparring replies, proposals (apply, undo, stale, reject), HTTP errors and **Stop**.
-- `tests/mock_server.rs` pins `dev/mock_llm_server.py` to the proposal format the editor parses.
-
-Without a display the GTK tests print `SKIPPED: no display`. The same checks run in GitHub
-Actions (`.github/workflows/ci.yml`) in a Fedora container.
-
-The screenshots above are rendered by `dev/screenshot.sh`, in GNOME's light and dark style, into
-`docs/screenshots/`. Run it again after a visible change to the window. It builds
-`examples/screenshot.rs`, which opens a sample post and holds a sparring and a ghostwriting
-exchange with a canned endpoint, and runs it in a private headless `mutter` (Fedora package
-`mutter`) on a private session bus, since Broadway draws nothing while no browser is attached.
-
-To check that your own files round-trip unchanged without adding them to the repository, list
-them, separated by colons, in `COUNTERPOINT_ROUNDTRIP_FILES`:
+To check that your own files survive loading and saving byte for byte, list them in
+`COUNTERPOINT_ROUNDTRIP_FILES`, separated by colons:
 
 ```sh
 COUNTERPOINT_ROUNDTRIP_FILES=post.md:notes.md dev/headless.sh cargo test --test gtk_editor
 ```
 
-The fixtures are generated by `python3 tests/fixtures/generate.py`, which also verifies their
-bytes; CI checks that the committed fixtures match.
+The test fixtures come from `python3 tests/fixtures/generate.py`; CI checks that the committed
+ones match. After a visible change to the window, regenerate the screenshots with
+`dev/screenshot.sh` (needs `mutter`).
 
 ## Releases
 
@@ -204,25 +119,3 @@ flatpak-builder --user --install --install-deps-from=flathub --force-clean \
 ```
 
 The desktop file, AppStream metainfo and icon both packages install are in `data/`.
-
-## Known limitations
-
-- Styling comes from GtkSourceView's Markdown highlighting: headings are not enlarged, and not
-  every CommonMark edge case is covered.
-- Line endings: a file that contains any CRLF (`\r\n`) is saved entirely with CRLF, otherwise
-  with LF. A leading byte order mark is kept.
-- Responses are not streamed; the chat shows a busy indicator until the full reply arrives, for
-  up to ten minutes.
-- Chat history is not persisted and is sent in full with every request.
-- An applied proposal stays marked as applied after you undo it in the editor, and cannot be
-  applied again; ask for a new proposal instead.
-- Chat replies render a subset of Markdown (no tables or images).
-- Enter in the chat input is handed to the input method first, so a composition is committed
-  rather than sent; this has not been tested with every input method.
-- Save As does not add a `.md` extension automatically; the suggested name `Untitled.md` has
-  one.
-- Only one document is open at a time; a second file given on the command line is ignored.
-
-## License
-
-MIT, see [LICENSE](LICENSE).
