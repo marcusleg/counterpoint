@@ -413,10 +413,7 @@ impl MainWindow {
     fn remember_file(&self, path: &Path) {
         {
             let mut state = self.state.borrow_mut();
-            if let Some(folder) = path.parent() {
-                state.last_folder = Some(folder.to_path_buf());
-            }
-            state.add_recent(path);
+            state.remember_file(path);
             let _ = state.save();
         }
         self.update_recent_menu();
@@ -439,8 +436,10 @@ impl MainWindow {
     /// `win.open-uri`, and so through the unsaved-changes guard.
     fn update_recent_menu(&self) {
         let home = glib::home_dir();
+        // A copy, so no borrow of the state is held while the menu emits `items-changed`.
+        let recent_files = self.state.borrow().recent_files.clone();
         self.recent_menu.remove_all();
-        for path in &self.state.borrow().recent_files {
+        for path in &recent_files {
             let item = gio::MenuItem::new(Some(&recent_label(path, &home)), None);
             let uri = gio::File::for_path(path).uri();
             item.set_action_and_target_value(Some("win.open-uri"), Some(&uri.to_variant()));
@@ -689,8 +688,13 @@ fn abbreviate_home(folder: &Path, home: &Path) -> String {
     }
 }
 
-/// The **Open Recent** entry for `path`: "post.md — ~/blog". Underscores are doubled because
-/// menu labels treat a single one as a mnemonic marker.
+/// The longest file name or folder an **Open Recent** entry shows; menu labels do not ellipsize,
+/// and one long entry would widen the whole main menu.
+const RECENT_PART_MAX_CHARS: usize = 30;
+
+/// The **Open Recent** entry for `path`: "post.md — ~/blog", each part shortened in the middle
+/// if it is long. Underscores are doubled because menu labels treat a single one as a mnemonic
+/// marker.
 fn recent_label(path: &Path, home: &Path) -> String {
     let name = path
         .file_name()
@@ -700,7 +704,27 @@ fn recent_label(path: &Path, home: &Path) -> String {
         .parent()
         .map(|folder| abbreviate_home(folder, home))
         .unwrap_or_default();
-    format!("{name} — {folder}").replace('_', "__")
+    format!(
+        "{} — {}",
+        shorten_middle(&name, RECENT_PART_MAX_CHARS),
+        shorten_middle(&folder, RECENT_PART_MAX_CHARS)
+    )
+    .replace('_', "__")
+}
+
+/// `text` if it has at most `max` characters, otherwise its start and end joined by "…", `max`
+/// characters in all.
+fn shorten_middle(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    let head = (max - 1) / 2;
+    let tail = max - 1 - head;
+    let mut shortened: String = chars[..head].iter().collect();
+    shortened.push('…');
+    shortened.extend(&chars[chars.len() - tail..]);
+    shortened
 }
 
 fn primary_menu(recent: &gio::Menu) -> gio::Menu {
@@ -760,6 +784,21 @@ mod tests {
     fn recent_label_shows_a_folder_outside_home_in_full() {
         let label = recent_label(Path::new("/srv/notes/post.md"), Path::new("/home/u"));
         assert_eq!(label, "post.md — /srv/notes");
+    }
+
+    #[test]
+    fn recent_label_shortens_a_long_name_and_folder_in_the_middle() {
+        let label = recent_label(
+            Path::new(
+                "/home/u/Documents/Writing/Blog/2026/drafts-for-review/\
+                 a-rather-long-article-title-about-writing.md",
+            ),
+            Path::new("/home/u"),
+        );
+        assert_eq!(
+            label,
+            "a-rather-long-…bout-writing.md — ~/Documents/Wr…afts-for-review"
+        );
     }
 
     #[test]

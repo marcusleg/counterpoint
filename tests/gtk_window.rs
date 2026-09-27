@@ -701,6 +701,8 @@ fn files(
     );
 }
 
+/// Open Recent, starting from where `files` left off: `crlf.md` is the only file opened so far.
+/// Adding a file by Save As is not covered, since it needs the file chooser.
 fn recent_files(
     checks: &mut Checks,
     main: &Rc<MainWindow>,
@@ -723,11 +725,13 @@ fn recent_files(
         recent_names() == ["crlf.md"],
         "a file opened earlier is listed under Open Recent",
     );
-    let folder = work_dir.display().to_string().replace('_', "__");
+    // A long temp folder is shortened in the middle, but keeps its end.
     checks.check(
         menu_entries(&recent_submenu(root))
             .first()
-            .is_some_and(|(label, _, _)| *label == format!("crlf.md — {folder}")),
+            .is_some_and(|(label, _, _)| {
+                label.starts_with("crlf.md — ") && label.ends_with("/work")
+            }),
         "an Open Recent entry shows the file name and its folder",
     );
 
