@@ -8,15 +8,25 @@ pub fn read_file(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("Could not open {}: {e}", path.display()))
 }
 
-/// True if `text` contains at least one CRLF line ending.
-pub fn uses_crlf(text: &str) -> bool {
-    text.contains("\r\n")
+/// Prepares file contents for the editor: returns the text with every CRLF line ending turned
+/// into LF, and whether there was any CRLF, so a save can restore it.
+pub fn from_disk(text: &str) -> (String, bool) {
+    if text.contains("\r\n") {
+        (text.replace("\r\n", "\n"), true)
+    } else {
+        (text.to_string(), false)
+    }
 }
 
-/// Converts every `\n` to `\r\n`. Only meaningful for text that contains no `\r\n` already
-/// (the editor never produces `\r`), such as the plain-text source coming out of the editor.
-pub fn to_crlf(text: &str) -> String {
-    text.replace('\n', "\r\n")
+/// Prepares editor text for saving: CRLF (e.g. pasted) becomes LF, then, if `crlf`, every LF
+/// becomes CRLF. A lone `\r` is kept.
+pub fn to_disk(text: &str, crlf: bool) -> String {
+    let text = text.replace("\r\n", "\n");
+    if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text
+    }
 }
 
 /// Writes to a temporary file next to `path` (or, if `path` is a symlink, next to the file it
@@ -116,14 +126,33 @@ mod tests {
     }
 
     #[test]
-    fn detects_crlf() {
-        assert!(uses_crlf("a\r\nb\n"));
-        assert!(!uses_crlf("a\nb\n"));
+    fn lf_text_passes_through_unchanged() {
+        assert_eq!(from_disk("a\nb\n"), ("a\nb\n".to_string(), false));
+        assert_eq!(to_disk("a\nb\n", false), "a\nb\n");
     }
 
     #[test]
-    fn converts_lf_to_crlf() {
-        assert_eq!(to_crlf("a\nb\n"), "a\r\nb\r\n");
+    fn crlf_text_is_edited_as_lf_and_saved_as_crlf() {
+        assert_eq!(from_disk("a\r\nb\r\n"), ("a\nb\n".to_string(), true));
+        assert_eq!(to_disk("a\nb\n", true), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn any_crlf_marks_the_file_as_crlf() {
+        assert_eq!(from_disk("a\r\nb\n"), ("a\nb\n".to_string(), true));
+    }
+
+    #[test]
+    fn pasted_crlf_is_normalised_on_save() {
+        assert_eq!(to_disk("a\r\nb\n", true), "a\r\nb\r\n");
+        assert_eq!(to_disk("a\r\nb\n", false), "a\nb\n");
+    }
+
+    #[test]
+    fn lone_carriage_return_is_kept() {
+        assert_eq!(from_disk("a\rb\r\n"), ("a\rb\n".to_string(), true));
+        assert_eq!(to_disk("a\rb\n", true), "a\rb\r\n");
+        assert_eq!(to_disk("a\rb\n", false), "a\rb\n");
     }
 
     #[cfg(unix)]
