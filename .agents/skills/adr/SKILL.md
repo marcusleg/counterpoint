@@ -7,12 +7,14 @@ description: Use when a change picks between viable designs, when an earlier arc
 
 ## Overview
 
-An ADR in `docs/adr/` records one decision the user made, in the user's words, short enough
-that the user reads all of it. The record holds only what the user said or approved. The
-codebase shows what was built, never why, and supplies nothing for the record.
+An ADR in `docs/adr/` records one decision the user made, short enough that the user reads
+all of it. The substance is the user's: the decision, the reasons, the alternatives weighed,
+the costs accepted. The prose is the agent's: clear and complete sentences, however terse the
+user was. The codebase shows what was built, never why, and supplies nothing for the record.
 
-The user reviews the record as a file, reading the diff. Chat carries the path and whatever
-needs their attention, never the text of the ADR.
+Chat carries the path, a concise statement of what was written or changed, and whatever
+needs the user's attention, not the record itself. An inferred sentence is named in a few
+words, not quoted.
 
 ## Process
 
@@ -22,15 +24,17 @@ needs their attention, never the text of the ADR.
 2. **Write the draft** to `docs/adr/NNNN-short-title.md` from [template.md](template.md).
    `NNNN` is the next unused four-digit number. The title states the decision ("Use
    GtkSourceView for the editor"). Status is `draft`; the date is the one the user named
-   for the decision, or empty. Each sentence traces back to something the user said. A
+   for the decision, or empty. Each claim traces back to something the user said. A
    sentence that only follows from what they said starts with `[inferred]` so they can
    strike it. A part the user has not supplied is a one-line placeholder in brackets, not a
    guess, also when the user asked for a finished record and is away.
-3. **Report in a few lines:** the path, the placeholders, the inferred sentences, and any
-   question the draft raised. Put all questions in one message.
+3. **Report in a few lines:** the path, what the record says in a sentence, the
+   placeholders, the inferred sentences, and any question the draft raised. Put all
+   questions in one message. After a change, say what changed and why.
 4. **Finish on the user's word.** Their edits stand. Their answers replace the placeholders.
-   When they say the decision is accepted or rejected, set the status and the date they name
-   and remove any remaining `[inferred]` markers. The ADR goes in the same pull request as
+   When they say the record or a change to it stands, remove the remaining `[inferred]`
+   markers; when they say the decision is accepted or rejected, set the status and the date
+   they name. The ADR goes in the same pull request as
    the change it belongs to, or in its own when it records a decision made earlier.
 
 ## Shape
@@ -45,8 +49,9 @@ Each part is as long as what the user said, and no longer:
 | Context | One paragraph; left out when it would repeat the lead or the reasons |
 | Alternatives considered | One `###` per alternative the user weighed, one or two sentences: what it was and why not |
 
-Things are named as the user names them. Source files, functions, crates and numbers read
-from the code stay in the code.
+A template section with nothing to hold is removed, not left as a stub. The app and
+`docs/prd.md` supply the names of things, and nothing more. Source files, functions, crates
+and numbers read from the code stay in the code.
 
 ## Status and date
 
@@ -58,8 +63,7 @@ from the code stay in the code.
 ## Amending and superseding
 
 - **Amend** when the broad decision still holds but a detail changed. Change the affected
-  sentences and add a dated line under `## Amendments`, created on the first amendment. The
-  user reviews the diff as for a new record.
+  sentences and add a dated line under `## Amendments`, created on the first amendment.
 - **Supersede** when the decision is revoked and a new one takes its place. Write a new ADR
   and set the old one's status to `superseded by ADR-NNNN`. Its text otherwise stays as it was.
 
