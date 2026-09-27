@@ -1,5 +1,5 @@
 //! GTK checks for the main window built through the public API: the chat input enabling Send,
-//! the mode toggle, the selection chip and (once added) the editor placeholder. GTK must run on
+//! the mode toggle, the selection chip and the editor placeholder. GTK must run on
 //! the thread that initialised it and only one `gtk::Application` may run per process, so this
 //! test builds the real window inside `connect_activate`, drives it with
 //! `glib::idle_add_local_once` once it is realized, and quits the application afterwards.
@@ -16,6 +16,7 @@ use gtk::{gio, glib};
 use counterpoint::ui::window::MainWindow;
 
 const NO_SELECTION: &str = "No selection — whole document";
+const EMPTY_EDITOR_HINT: &str = "Open a Markdown file or start writing…";
 
 #[derive(Default)]
 struct Checks {
@@ -131,8 +132,18 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         .find_map(|w| w.downcast_ref::<adw::ToggleGroup>())
         .expect("mode toggle")
         .clone();
+    let editor_placeholder = widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::Label>())
+        .find(|l| l.text() == EMPTY_EDITOR_HINT)
+        .expect("editor placeholder")
+        .clone();
 
     checks.check(!send.is_sensitive(), "Send starts insensitive");
+    checks.check(
+        editor_placeholder.is_visible(),
+        "the editor placeholder is visible for the empty editor",
+    );
 
     input.buffer().set_text("Hello");
     checks.check(
@@ -152,6 +163,10 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
 
     let buffer = editor.buffer();
     buffer.set_text("Some example text.");
+    checks.check(
+        !editor_placeholder.is_visible(),
+        "the editor placeholder hides once the editor has text",
+    );
     let start = buffer.iter_at_offset(0);
     let end = buffer.iter_at_offset(4);
     buffer.select_range(&start, &end);

@@ -38,12 +38,29 @@ impl MainWindow {
             .width_request(300)
             .child(editor.widget())
             .build();
+        let editor_placeholder = gtk::Label::builder()
+            .label("Open a Markdown file or start writing…")
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Start)
+            .margin_start(24)
+            .margin_top(16)
+            .can_target(false)
+            .css_classes(["dim-label"])
+            .build();
+        let editor_overlay = gtk::Overlay::builder().child(&editor_scroller).build();
+        editor_overlay.add_overlay(&editor_placeholder);
+        editor_placeholder.set_visible(editor.buffer().char_count() == 0);
+        editor.buffer().connect_changed(glib::clone!(
+            #[weak]
+            editor_placeholder,
+            move |buffer| editor_placeholder.set_visible(buffer.char_count() == 0)
+        ));
         let chat = ChatPane::new(editor.clone());
         chat.widget().set_width_request(280);
 
         let paned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .start_child(&editor_scroller)
+            .start_child(&editor_overlay)
             .end_child(chat.widget())
             .resize_start_child(true)
             .resize_end_child(false)

@@ -3,8 +3,11 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Converts `markdown` to Pango markup. Supports paragraphs, headings, emphasis, strong,
-/// strikethrough, inline code, code blocks, lists, block quotes, links and rules; raw HTML and
-/// everything else appear as escaped text. The result always has balanced tags.
+/// strikethrough, inline code, code blocks, lists, block quotes and rules. Links whose
+/// destination starts with `http://`, `https://` or `mailto:` (case-insensitive) become
+/// `<a href="…">`, URL escaped; other links render their text only. Raw HTML and everything else
+/// appear as escaped text. `&`, `<`, `>`, `'` and `"` are always escaped. The result always has
+/// balanced tags.
 pub fn to_pango(markdown: &str) -> String {
     let mut writer = Writer::default();
     for event in Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH) {
@@ -39,6 +42,9 @@ struct Writer {
     /// True where a block may start without a separator: at the beginning and after a list
     /// marker or quote opening.
     at_block_start: bool,
+    /// One entry per open link: whether its destination was clickable, so the matching `</a>`
+    /// is only emitted where an `<a>` was.
+    links: Vec<bool>,
 }
 
 impl Default for Writer {
@@ -49,6 +55,7 @@ impl Default for Writer {
             quote_depth: 0,
             raw_block: None,
             at_block_start: true,
+            links: Vec::new(),
         }
     }
 }
@@ -125,9 +132,13 @@ impl Writer {
             Tag::Strong => self.out.push_str("<b>"),
             Tag::Strikethrough => self.out.push_str("<s>"),
             Tag::Link { dest_url, .. } => {
-                self.out.push_str("<a href=\"");
-                self.out.push_str(&escape(&dest_url));
-                self.out.push_str("\">");
+                let clickable = is_clickable(&dest_url);
+                if clickable {
+                    self.out.push_str("<a href=\"");
+                    self.out.push_str(&escape(&dest_url));
+                    self.out.push_str("\">");
+                }
+                self.links.push(clickable);
             }
             _ => {}
         }
@@ -156,7 +167,7 @@ impl Writer {
             TagEnd::Emphasis => self.out.push_str("</i>"),
             TagEnd::Strong => self.out.push_str("</b>"),
             TagEnd::Strikethrough => self.out.push_str("</s>"),
-            TagEnd::Link => self.out.push_str("</a>"),
+            TagEnd::Link if self.links.pop().unwrap_or(false) => self.out.push_str("</a>"),
             _ => {}
         }
     }
@@ -198,6 +209,15 @@ impl Writer {
 
 const QUOTE_INDENT: &str = "    ";
 const LIST_INDENT: &str = "   ";
+
+/// True if `dest` starts with `http://`, `https://` or `mailto:`, ASCII case-insensitively.
+fn is_clickable(dest: &str) -> bool {
+    const SCHEMES: [&str; 3] = ["http://", "https://", "mailto:"];
+    SCHEMES.iter().any(|scheme| {
+        dest.get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -291,6 +311,20 @@ mod tests {
             "[site](https://example.com/?a=1&b=\"2\")",
             "<a href=\"https://example.com/?a=1&amp;b=&quot;2&quot;\">site</a>",
         );
+    }
+
+    #[test]
+    fn only_web_and_mail_links_become_clickable() {
+        check(
+            "[site](https://example.com)",
+            "<a href=\"https://example.com\">site</a>",
+        );
+        check(
+            "[mail](mailto:user@example.com)",
+            "<a href=\"mailto:user@example.com\">mail</a>",
+        );
+        check("[passwd](file:///etc/passwd)", "passwd");
+        check("[notes](notes.md)", "notes");
     }
 
     #[test]
