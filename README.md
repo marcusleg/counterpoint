@@ -60,6 +60,9 @@ cargo run
 | Ctrl+Q            | Quit                                     |
 | Ctrl+Z            | Undo (an applied proposal is one step)   |
 | Ctrl+Shift+Z      | Redo                                     |
+| Ctrl++            | Zoom in the editor text                  |
+| Ctrl+-            | Zoom out the editor text                 |
+| Ctrl+0            | Reset the editor zoom                    |
 | Enter, Ctrl+Enter | Send chat message                        |
 | Shift+Enter       | New line in the chat input               |
 

@@ -8,3 +8,4 @@ pub mod prompt;
 pub mod proposal;
 pub mod text_diff;
 pub mod ui;
+pub mod zoom;

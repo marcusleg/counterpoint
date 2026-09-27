@@ -11,6 +11,7 @@ use crate::document;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
 use crate::ui::preferences_dialog::PreferencesDialog;
+use crate::zoom::Zoom;
 
 pub struct MainWindow {
     window: adw::ApplicationWindow,
@@ -19,6 +20,10 @@ pub struct MainWindow {
     /// Owned here: the pane's own signal handlers only hold weak references; never read, held
     /// only to keep the pane alive.
     _chat: Rc<ChatPane>,
+    /// The button showing the current zoom percentage, e.g. "100%".
+    zoom_label: gtk::Button,
+    /// The editor's current zoom level.
+    zoom: Cell<Zoom>,
     /// The open file, or `None` for a new document.
     path: RefCell<Option<PathBuf>>,
     /// True if the open file uses CRLF line endings, so saving restores them.
@@ -76,8 +81,30 @@ impl MainWindow {
             .primary(true)
             .build();
 
+        let zoom_out_button = gtk::Button::builder()
+            .icon_name("zoom-out-symbolic")
+            .tooltip_text("Zoom Out")
+            .action_name("win.zoom-out")
+            .build();
+        let zoom_label = gtk::Button::builder()
+            .label(Zoom::default().label())
+            .tooltip_text("Reset Zoom")
+            .action_name("win.zoom-reset")
+            .css_classes(["flat"])
+            .build();
+        let zoom_in_button = gtk::Button::builder()
+            .icon_name("zoom-in-symbolic")
+            .tooltip_text("Zoom In")
+            .action_name("win.zoom-in")
+            .build();
+        let zoom_box = gtk::Box::builder().css_classes(["linked"]).build();
+        zoom_box.append(&zoom_out_button);
+        zoom_box.append(&zoom_label);
+        zoom_box.append(&zoom_in_button);
+
         let title = adw::WindowTitle::new("", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
+        header.pack_start(&zoom_box);
         header.pack_end(&menu_button);
 
         let toolbar = adw::ToolbarView::new();
@@ -96,6 +123,8 @@ impl MainWindow {
             title,
             editor,
             _chat: chat,
+            zoom_label,
+            zoom: Cell::new(Zoom::default()),
             path: RefCell::new(None),
             crlf: Cell::new(false),
             close_confirmed: Cell::new(false),
@@ -104,6 +133,7 @@ impl MainWindow {
         this.update_title();
         this.follow_dark_mode();
         this.add_actions();
+        this.apply_zoom(Zoom::default());
 
         this.editor.buffer().connect_modified_changed(glib::clone!(
             #[weak]
@@ -159,8 +189,61 @@ impl MainWindow {
         let preferences = gio::ActionEntry::builder("preferences")
             .activate(|window: &adw::ApplicationWindow, _, _| PreferencesDialog::present(window))
             .build();
-        self.window
-            .add_action_entries([open, save, save_as, preferences]);
+        let zoom_in = gio::ActionEntry::builder("zoom-in")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| {
+                    this.apply_zoom(this.zoom.get().zoom_in());
+                }
+            ))
+            .build();
+        let zoom_out = gio::ActionEntry::builder("zoom-out")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| {
+                    this.apply_zoom(this.zoom.get().zoom_out());
+                }
+            ))
+            .build();
+        let zoom_reset = gio::ActionEntry::builder("zoom-reset")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| {
+                    this.apply_zoom(Zoom::reset());
+                }
+            ))
+            .build();
+        self.window.add_action_entries([
+            open,
+            save,
+            save_as,
+            preferences,
+            zoom_in,
+            zoom_out,
+            zoom_reset,
+        ]);
+    }
+
+    /// Applies `zoom` to the editor and the header bar's zoom controls.
+    fn apply_zoom(&self, zoom: Zoom) {
+        self.zoom.set(zoom);
+        self.editor.set_zoom(zoom.percent());
+        self.zoom_label.set_label(&zoom.label());
+        self.set_zoom_action_enabled("zoom-in", zoom.can_zoom_in());
+        self.set_zoom_action_enabled("zoom-out", zoom.can_zoom_out());
+    }
+
+    fn set_zoom_action_enabled(&self, name: &str, enabled: bool) {
+        if let Some(action) = self
+            .window
+            .lookup_action(name)
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(enabled);
+        }
     }
 
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {

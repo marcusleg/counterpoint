@@ -73,6 +73,7 @@ dependencies.
 
 Header bar:
 
+- Start: a linked `GtkBox` with the zoom controls (zoom out, the current percentage, zoom in).
 - Title: `AdwWindowTitle` with the file name ("Untitled" for a new document), prefixed with
   "• " while modified, and the file's folder as subtitle.
 - End: a `GtkMenuButton` with the primary menu.
@@ -93,6 +94,9 @@ the primary menu):
 | `win.save` | Ctrl+S |
 | `win.save-as` | Ctrl+Shift+S |
 | `win.preferences` | Ctrl+, |
+| `win.zoom-in` | Ctrl++, Ctrl+=, Ctrl+Keypad+ |
+| `win.zoom-out` | Ctrl+-, Ctrl+Keypad- |
+| `win.zoom-reset` | Ctrl+0, Ctrl+Keypad 0 |
 | `app.shortcuts` | Ctrl+? |
 | `app.about` | (none) |
 | `app.quit` | Ctrl+Q |
@@ -101,7 +105,16 @@ the primary menu):
 unsaved-changes guard; it is also listed in the Keyboard Shortcuts dialog. Undo and redo are
 GtkSourceView's own (Ctrl+Z, Ctrl+Shift+Z). The Keyboard Shortcuts entry opens an
 `AdwShortcutsDialog` built in code listing the shortcuts above plus undo/redo and the chat input
-keys.
+keys; an action's several accelerators collapse to one entry there, showing the first (primary)
+accelerator.
+
+### Zoom
+
+The zoom controls scale the editor's text only, in steps of 10 percentage points from 50% to
+300%; the zoom-in and zoom-out buttons (and their actions) disable themselves at the bounds. The
+level is applied through a `GtkCssProvider` scoped to the editor view's own `counterpoint-editor`
+style class (`font-size: <percent>%`), registered on the display once per `EditorView` and
+reloaded on every zoom change.
 
 ## Editor
 

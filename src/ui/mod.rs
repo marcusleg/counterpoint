@@ -21,14 +21,34 @@ label.edit-original { background-color: alpha(var(--error-bg-color), 0.15); }
 label.edit-replacement { background-color: alpha(var(--success-bg-color), 0.15); }
 ";
 
-/// (action, accelerators, label) for every application shortcut, in menu order.
-const SHORTCUTS: &[(&str, &str, &str)] = &[
-    ("win.open", "<Control>o", "Open"),
-    ("win.save", "<Control>s", "Save"),
-    ("win.save-as", "<Control><Shift>s", "Save As"),
-    ("win.preferences", "<Control>comma", "Preferences"),
-    ("app.shortcuts", "<Control>question", "Keyboard Shortcuts"),
-    ("app.quit", "<Control>q", "Quit"),
+/// (action, accelerators, label) for every application shortcut. An action may have several
+/// accelerators; the first is its primary one, shown in the Keyboard Shortcuts dialog.
+const SHORTCUTS: &[(&str, &[&str], &str)] = &[
+    ("win.open", &["<Control>o"], "Open"),
+    ("win.save", &["<Control>s"], "Save"),
+    ("win.save-as", &["<Control><Shift>s"], "Save As"),
+    ("win.preferences", &["<Control>comma"], "Preferences"),
+    (
+        "win.zoom-in",
+        &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
+        "Zoom In",
+    ),
+    (
+        "win.zoom-out",
+        &["<Control>minus", "<Control>KP_Subtract"],
+        "Zoom Out",
+    ),
+    (
+        "win.zoom-reset",
+        &["<Control>0", "<Control>KP_0"],
+        "Reset Zoom",
+    ),
+    (
+        "app.shortcuts",
+        &["<Control>question"],
+        "Keyboard Shortcuts",
+    ),
+    ("app.quit", &["<Control>q"], "Quit"),
 ];
 
 pub fn run() -> glib::ExitCode {
@@ -78,8 +98,8 @@ fn add_app_actions(app: &adw::Application) {
         })
         .build();
     app.add_action_entries([quit, shortcuts, about]);
-    for (action, accel, _) in SHORTCUTS {
-        app.set_accels_for_action(action, &[accel]);
+    for (action, accels, _) in SHORTCUTS {
+        app.set_accels_for_action(action, accels);
     }
 }
 
@@ -97,8 +117,8 @@ fn about_dialog() -> adw::AboutDialog {
 
 fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let file = adw::ShortcutsSection::new(Some("Application"));
-    for (_, accel, label) in SHORTCUTS {
-        file.add(adw::ShortcutsItem::new(label, accel));
+    for (_, accels, label) in SHORTCUTS {
+        file.add(adw::ShortcutsItem::new(label, accels[0]));
     }
     let editor = adw::ShortcutsSection::new(Some("Editor"));
     editor.add(adw::ShortcutsItem::new("Undo", "<Control>z"));
