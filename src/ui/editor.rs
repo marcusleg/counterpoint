@@ -1,21 +1,27 @@
 //! The Markdown source editor: a GtkSourceView that holds the exact file text.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use gtk::gdk;
 use gtk::prelude::*;
 use sourceview5::prelude::*;
 
 use crate::text_diff;
 
-/// The style class the zoom level's CSS provider targets.
-const ZOOM_CLASS: &str = "counterpoint-editor";
+/// Source of the per-instance style class names below, so that two `EditorView`s never share one
+/// class and, through it, each other's zoom level.
+static NEXT_EDITOR_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Cheap to clone; clones share the same view, buffer and zoom style provider.
+/// Cheap to clone; clones share the same view, buffer, zoom style provider and class name.
 #[derive(Clone)]
 pub struct EditorView {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
     /// Registered on the display once, in `new`; `set_zoom` only reloads its CSS.
     zoom_style: gtk::CssProvider,
+    /// This instance's own style class (`counterpoint-editor-{n}`), so the zoom CSS provider only
+    /// styles this editor even though providers are registered display-wide.
+    zoom_class: String,
 }
 
 impl Default for EditorView {
@@ -39,7 +45,11 @@ impl EditorView {
         view.set_right_margin(24);
         view.set_top_margin(16);
         view.set_bottom_margin(16);
-        view.add_css_class(ZOOM_CLASS);
+        let zoom_class = format!(
+            "counterpoint-editor-{}",
+            NEXT_EDITOR_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        view.add_css_class(&zoom_class);
 
         let zoom_style = gtk::CssProvider::new();
         if let Some(display) = gdk::Display::default() {
@@ -54,6 +64,7 @@ impl EditorView {
             view,
             buffer,
             zoom_style,
+            zoom_class,
         }
     }
 
@@ -105,8 +116,10 @@ impl EditorView {
 
     /// Scales the editor's font to `percent` of its default size.
     pub fn set_zoom(&self, percent: u32) {
-        self.zoom_style
-            .load_from_string(&format!(".{ZOOM_CLASS} {{ font-size: {percent}%; }}"));
+        self.zoom_style.load_from_string(&format!(
+            ".{} {{ font-size: {percent}%; }}",
+            self.zoom_class
+        ));
     }
 
     /// Uses the Adwaita style scheme matching `dark`.

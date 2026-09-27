@@ -48,6 +48,7 @@ fn main() -> ExitCode {
     apply_leaves_text_outside_the_span_alone(&mut checks);
     apply_counts_characters(&mut checks);
     zoom_changes_the_editor_font_size(&mut checks);
+    zoom_is_independent_per_editor(&mut checks);
     chat_markup_is_valid_for_labels(&mut checks);
 
     println!("{} passed, {} failed", checks.passed, checks.failures);
@@ -201,6 +202,52 @@ fn zoom_changes_the_editor_font_size(checks: &mut Checks) {
             "zooming to 200% increases the editor's line height ({height_100} -> {height_200})"
         ),
     );
+    window.destroy();
+}
+
+/// Each `EditorView` registers its zoom CSS provider under its own style class, so zooming one
+/// editor must never affect another's line height. Checked in both directions: whichever
+/// provider a naive shared class would let win, that direction alone would still pass, so this
+/// also asserts that the zoomed editor's own height actually changes.
+fn zoom_is_independent_per_editor(checks: &mut Checks) {
+    let first = EditorView::new();
+    first.load("One line of example text.");
+    let second = EditorView::new();
+    second.load("One line of example text.");
+
+    let window = gtk::Window::new();
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    container.append(first.widget());
+    container.append(second.widget());
+    window.set_child(Some(&container));
+    window.present();
+
+    first.set_zoom(100);
+    second.set_zoom(100);
+    let first_100 = first_line_height(&window, &first);
+    let second_100 = first_line_height(&window, &second);
+
+    first.set_zoom(200);
+    checks.check(
+        first_line_height(&window, &first) > first_100,
+        "zooming the first editor changes its own line height",
+    );
+    checks.check(
+        first_line_height(&window, &second) == second_100,
+        "zooming the first editor leaves the second editor's line height unchanged",
+    );
+    first.set_zoom(100);
+
+    second.set_zoom(200);
+    checks.check(
+        first_line_height(&window, &second) > second_100,
+        "zooming the second editor changes its own line height",
+    );
+    checks.check(
+        first_line_height(&window, &first) == first_100,
+        "zooming the second editor leaves the first editor's line height unchanged",
+    );
+
     window.destroy();
 }
 
