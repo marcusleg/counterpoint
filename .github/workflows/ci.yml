@@ -1,8 +1,30 @@
 name: CI
 
+# Runs on pull requests and on main, not on pushes to other branches or tags, whose commits a
+# pull request or main already tests. Changes that cannot affect the checks below, such as
+# documentation, packaging or the release workflow, are skipped. dev/headless.sh and
+# dev/mock_llm_server.py are run by the tests; .gitattributes decides the fixtures' line endings.
 on:
   push:
+    branches: [main]
+    paths: &paths
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "dev/headless.sh"
+      - "dev/mock_llm_server.py"
+      - ".gitattributes"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+# A new push to a pull request supersedes the run for its previous head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
