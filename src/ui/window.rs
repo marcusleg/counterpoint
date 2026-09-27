@@ -1,34 +1,43 @@
 //! The main window: header bar, editor, chat pane and file handling.
 
 use std::cell::{Cell, RefCell};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
-use crate::document;
+use crate::document::{self, DiskFormat};
 use crate::state::State;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
 use crate::ui::preferences_dialog::PreferencesDialog;
 use crate::zoom::Zoom;
 
+/// Below this width the chat pane overlays the editor instead of squeezing it.
+const COLLAPSE_BELOW_SP: f64 = 900.0;
+
 pub struct MainWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
     editor: EditorView,
-    /// Owned here: the pane's own signal handlers only hold weak references; never read, held
-    /// only to keep the pane alive.
-    _chat: Rc<ChatPane>,
+    chat: Rc<ChatPane>,
+    split: adw::OverlaySplitView,
     /// The button showing the current zoom percentage, e.g. "100%".
     zoom_label: gtk::Button,
     /// The editor's current zoom level.
     zoom: Cell<Zoom>,
+    /// The remembered folder and zoom level, loaded once and saved on every change.
+    state: RefCell<State>,
     /// The open file, or `None` for a new document.
     path: RefCell<Option<PathBuf>>,
-    /// True if the open file uses CRLF line endings, so saving restores them.
-    crlf: Cell<bool>,
+    /// Line endings and byte order mark of the open file, restored on save.
+    format: Cell<DiskFormat>,
+    /// The file's modification time when it was last read or written, to notice changes made
+    /// by other programs before overwriting them.
+    modified_on_disk: Cell<Option<SystemTime>>,
     /// Set once the user has saved or discarded changes, so the window may close.
     close_confirmed: Cell<bool>,
     /// Set while the unsaved-changes alert (and a save it starts) is in progress, so another
@@ -61,25 +70,34 @@ impl MainWindow {
             editor_placeholder,
             move |buffer| editor_placeholder.set_visible(buffer.char_count() == 0)
         ));
-        let chat = ChatPane::new(editor.clone());
-        chat.widget().set_width_request(280);
 
-        let paned = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .start_child(&editor_overlay)
-            .end_child(chat.widget())
-            .resize_start_child(true)
-            .resize_end_child(false)
-            .shrink_start_child(false)
-            .shrink_end_child(false)
-            .position(960)
+        let toasts = adw::ToastOverlay::new();
+        let chat = ChatPane::new(editor.clone(), toasts.clone());
+
+        let split = adw::OverlaySplitView::builder()
+            .content(&editor_overlay)
+            .sidebar(chat.widget())
+            .sidebar_position(gtk::PackType::End)
+            .min_sidebar_width(280.0)
+            .max_sidebar_width(600.0)
+            .sidebar_width_fraction(0.3)
             .build();
+        toasts.set_child(Some(&split));
 
-        let menu_button = gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .tooltip_text("Main Menu")
-            .menu_model(&primary_menu())
-            .primary(true)
+        let open_button = gtk::Button::builder()
+            .label("_Open…")
+            .use_underline(true)
+            .tooltip_text("Open a Markdown File")
+            .action_name("win.open")
+            .build();
+        let chat_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Show or Hide the Chat")
+            .action_name("win.toggle-chat")
+            .build();
+        split
+            .bind_property("show-sidebar", &chat_toggle, "active")
+            .sync_create()
             .build();
 
         let zoom_out_button = gtk::Button::builder()
@@ -91,54 +109,75 @@ impl MainWindow {
             .label(Zoom::default().label())
             .tooltip_text("Reset Zoom")
             .action_name("win.zoom-reset")
-            .css_classes(["flat"])
             .build();
         let zoom_in_button = gtk::Button::builder()
             .icon_name("zoom-in-symbolic")
             .tooltip_text("Zoom In")
             .action_name("win.zoom-in")
             .build();
-        let zoom_box = gtk::Box::builder().css_classes(["linked"]).build();
+        let zoom_box = gtk::Box::builder()
+            .css_classes(["linked", "zoom-controls"])
+            .halign(gtk::Align::Center)
+            .build();
         zoom_box.append(&zoom_out_button);
         zoom_box.append(&zoom_label);
         zoom_box.append(&zoom_in_button);
 
+        let menu_popover = gtk::PopoverMenu::from_model(Some(&primary_menu()));
+        menu_popover.add_child(&zoom_box, "zoom");
+        let menu_button = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .tooltip_text("Main Menu")
+            .popover(&menu_popover)
+            .primary(true)
+            .build();
+
         let title = adw::WindowTitle::new("", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
-        header.pack_start(&zoom_box);
+        header.pack_start(&open_button);
         header.pack_end(&menu_button);
+        header.pack_end(&chat_toggle);
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
-        toolbar.set_content(Some(&paned));
+        toolbar.set_content(Some(&toasts));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
-            .default_width(1400)
-            .default_height(850)
+            .default_width(1200)
+            .default_height(800)
             .content(&toolbar)
             .build();
+        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            COLLAPSE_BELOW_SP,
+            adw::LengthUnit::Sp,
+        ));
+        narrow.add_setter(&split, "collapsed", Some(&true.to_value()));
+        window.add_breakpoint(narrow);
 
+        let state = State::load();
+        let initial_zoom = state.zoom.map(Zoom::from_percent).unwrap_or_default();
         let this = Rc::new(Self {
             window,
             title,
             editor,
-            _chat: chat,
+            chat,
+            split,
             zoom_label,
             zoom: Cell::new(Zoom::default()),
+            state: RefCell::new(state),
             path: RefCell::new(None),
-            crlf: Cell::new(false),
+            format: Cell::new(DiskFormat::default()),
+            modified_on_disk: Cell::new(None),
             close_confirmed: Cell::new(false),
             confirm_pending: Cell::new(false),
         });
         this.update_title();
         this.follow_dark_mode();
         this.add_actions();
-        let initial_zoom = State::load()
-            .zoom
-            .map(Zoom::from_percent)
-            .unwrap_or_default();
         this.apply_zoom(initial_zoom);
+        this.accept_dropped_files(&editor_overlay);
 
         this.editor.buffer().connect_modified_changed(glib::clone!(
             #[weak]
@@ -154,9 +193,44 @@ impl MainWindow {
         this
     }
 
+    pub fn window(&self) -> &adw::ApplicationWindow {
+        &self.window
+    }
+
     pub fn present(&self) {
         self.window.present();
         self.editor.widget().grab_focus();
+    }
+
+    /// Opens `file` once the unsaved-changes guard allows it; errors are shown in a dialog.
+    pub fn open_file(self: &Rc<Self>, file: gio::File) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if !this.confirm_discard().await {
+                return;
+            }
+            match file.path() {
+                Some(path) => {
+                    if let Err(message) = this.load_path(&path) {
+                        this.show_error("Could Not Open File", &message);
+                    }
+                }
+                None => this.show_error("Could Not Open File", ONLY_LOCAL_FILES),
+            }
+        });
+    }
+
+    /// Replaces the document with the file at `path`, with nothing to undo. Does not ask about
+    /// unsaved changes; `open_file` does.
+    pub fn load_path(&self, path: &Path) -> Result<(), String> {
+        let contents = document::read_file(path)?;
+        let (text, format) = document::from_disk(&contents);
+        self.format.set(format);
+        self.editor.load(&text);
+        self.modified_on_disk.set(modification_time(path));
+        self.remember_folder(path);
+        self.set_path(path.to_path_buf());
+        Ok(())
     }
 
     fn add_actions(self: &Rc<Self>) {
@@ -175,6 +249,18 @@ impl MainWindow {
                 self,
                 move |_: &adw::ApplicationWindow, _, _| {
                     glib::spawn_future_local(async move { this.open().await });
+                }
+            ))
+            .build();
+        let open_uri = gio::ActionEntry::builder("open-uri")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, parameter| {
+                    if let Some(uri) = parameter.and_then(|p| p.get::<String>()) {
+                        this.open_file(gio::File::for_uri(&uri));
+                    }
                 }
             ))
             .build();
@@ -201,7 +287,27 @@ impl MainWindow {
             ))
             .build();
         let preferences = gio::ActionEntry::builder("preferences")
-            .activate(|window: &adw::ApplicationWindow, _, _| PreferencesDialog::present(window))
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |window: &adw::ApplicationWindow, _, _| {
+                    let dialog = PreferencesDialog::present(window);
+                    dialog.connect_closed(glib::clone!(
+                        #[weak]
+                        this,
+                        move |_| this.chat.refresh_config()
+                    ));
+                }
+            ))
+            .build();
+        let toggle_chat = gio::ActionEntry::builder("toggle-chat")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| {
+                    this.split.set_show_sidebar(!this.split.shows_sidebar());
+                }
+            ))
             .build();
         let zoom_in = gio::ActionEntry::builder("zoom-in")
             .activate(glib::clone!(
@@ -239,16 +345,37 @@ impl MainWindow {
         self.window.add_action_entries([
             new,
             open,
+            open_uri,
             save,
             save_as,
             preferences,
+            toggle_chat,
             zoom_in,
             zoom_out,
             zoom_reset,
         ]);
     }
 
-    /// Applies `zoom` to the editor and the header bar's zoom controls.
+    /// Opens a Markdown file dropped onto the editor, through the unsaved-changes guard.
+    fn accept_dropped_files(self: &Rc<Self>, target: &gtk::Overlay) {
+        let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
+        drop.connect_drop(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| match value.get::<gio::File>() {
+                Ok(file) => {
+                    this.open_file(file);
+                    true
+                }
+                Err(_) => false,
+            }
+        ));
+        target.add_controller(drop);
+    }
+
+    /// Applies `zoom` to the editor and the zoom controls.
     fn apply_zoom(&self, zoom: Zoom) {
         self.zoom.set(zoom);
         self.editor.set_zoom(zoom.percent());
@@ -270,7 +397,7 @@ impl MainWindow {
     /// Persists the zoom level for the next restart. Saving the state is a convenience, so a
     /// failure here must not interrupt the user.
     fn remember_zoom(&self, zoom: Zoom) {
-        let mut state = State::load();
+        let mut state = self.state.borrow_mut();
         state.zoom = Some(zoom.percent());
         let _ = state.save();
     }
@@ -281,9 +408,16 @@ impl MainWindow {
         let Some(folder) = path.parent() else {
             return;
         };
-        let mut state = State::load();
+        let mut state = self.state.borrow_mut();
         state.last_folder = Some(folder.to_path_buf());
         let _ = state.save();
+    }
+
+    fn remembered_folder(&self) -> Option<gio::File> {
+        self.state
+            .borrow()
+            .remembered_folder()
+            .map(gio::File::for_path)
     }
 
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
@@ -310,8 +444,11 @@ impl MainWindow {
             return false;
         }
         let dialog = adw::AlertDialog::builder()
-            .heading("Save changes?")
-            .body("The document has unsaved changes. Save them first?")
+            .heading("Save Changes?")
+            .body(format!(
+                "“{}” has unsaved changes. Changes which are not saved will be permanently lost.",
+                self.document_name()
+            ))
             .default_response("save")
             .close_response("cancel")
             .build();
@@ -345,7 +482,8 @@ impl MainWindow {
     fn reset_document(&self) {
         self.editor.load("");
         *self.path.borrow_mut() = None;
-        self.crlf.set(false);
+        self.format.set(DiskFormat::default());
+        self.modified_on_disk.set(None);
         self.update_title();
     }
 
@@ -354,24 +492,18 @@ impl MainWindow {
             return;
         }
         let dialog = file_dialog("Open Markdown File");
-        if let Some(folder) = State::load().remembered_folder() {
-            dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+        if let Some(folder) = self.remembered_folder() {
+            dialog.set_initial_folder(Some(&folder));
         }
         let Ok(file) = dialog.open_future(Some(&self.window)).await else {
             return;
         };
         let Some(path) = file.path() else {
+            self.show_error("Could Not Open File", ONLY_LOCAL_FILES);
             return;
         };
-        match document::read_file(&path) {
-            Ok(contents) => {
-                let (text, crlf) = document::from_disk(&contents);
-                self.crlf.set(crlf);
-                self.editor.load(&text);
-                self.remember_folder(&path);
-                self.set_path(path);
-            }
-            Err(message) => self.show_error(&message),
+        if let Err(message) = self.load_path(&path) {
+            self.show_error("Could Not Open File", &message);
         }
     }
 
@@ -379,19 +511,20 @@ impl MainWindow {
     async fn save(self: &Rc<Self>) -> bool {
         let path = self.path.borrow().clone();
         match path {
-            Some(path) => self.write_to(path),
+            Some(path) => self.write_to(path).await,
             None => self.save_as().await,
         }
     }
 
     async fn save_as(self: &Rc<Self>) -> bool {
         let dialog = file_dialog("Save Markdown File");
-        match self.path.borrow().as_ref() {
+        let current = self.path.borrow().clone();
+        match current {
             Some(path) => dialog.set_initial_file(Some(&gio::File::for_path(path))),
             None => {
                 dialog.set_initial_name(Some("Untitled.md"));
-                if let Some(folder) = State::load().remembered_folder() {
-                    dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+                if let Some(folder) = self.remembered_folder() {
+                    dialog.set_initial_folder(Some(&folder));
                 }
             }
         }
@@ -399,25 +532,59 @@ impl MainWindow {
             return false;
         };
         match file.path() {
-            Some(path) => self.write_to(path),
-            None => false,
+            Some(path) => self.write_to(path).await,
+            None => {
+                self.show_error("Could Not Save File", ONLY_LOCAL_FILES);
+                false
+            }
         }
     }
 
-    fn write_to(&self, path: PathBuf) -> bool {
-        let contents = document::to_disk(&self.editor.text(), self.crlf.get());
+    /// Writes the document to `path`. If that is the open file and another program changed it
+    /// since it was read, asks before overwriting those changes.
+    async fn write_to(self: &Rc<Self>, path: PathBuf) -> bool {
+        let is_open_file = self.path.borrow().as_deref() == Some(path.as_path());
+        if is_open_file && !self.confirm_overwrite_changed_file(&path).await {
+            return false;
+        }
+        let contents = document::to_disk(&self.editor.text(), self.format.get());
         match document::write_file(&path, &contents) {
             Ok(()) => {
                 self.editor.buffer().set_modified(false);
+                self.modified_on_disk.set(modification_time(&path));
                 self.remember_folder(&path);
                 self.set_path(path);
                 true
             }
             Err(message) => {
-                self.show_error(&message);
+                self.show_error("Could Not Save File", &message);
                 false
             }
         }
+    }
+
+    /// True unless the file changed on disk since it was read and the user chooses to keep the
+    /// version on disk.
+    async fn confirm_overwrite_changed_file(self: &Rc<Self>, path: &Path) -> bool {
+        let (Some(known), Some(current)) = (self.modified_on_disk.get(), modification_time(path))
+        else {
+            return true;
+        };
+        if known == current {
+            return true;
+        }
+        let dialog = adw::AlertDialog::builder()
+            .heading("Overwrite Changed File?")
+            .body(format!(
+                "“{}” was changed on disk after it was opened here. Saving will overwrite those changes.",
+                self.document_name()
+            ))
+            .default_response("cancel")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("overwrite", "_Overwrite")]);
+        dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
+        dialog.choose_future(Some(&self.window)).await == "overwrite"
     }
 
     fn set_path(&self, path: PathBuf) {
@@ -425,17 +592,24 @@ impl MainWindow {
         self.update_title();
     }
 
-    fn update_title(&self) {
-        let path = self.path.borrow();
-        let name = path
+    /// The open file's name, or "Untitled".
+    fn document_name(&self) -> String {
+        self.path
+            .borrow()
             .as_deref()
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".to_string());
-        let folder = path
+            .unwrap_or_else(|| "Untitled".to_string())
+    }
+
+    fn update_title(&self) {
+        let name = self.document_name();
+        let folder = self
+            .path
+            .borrow()
             .as_deref()
             .and_then(Path::parent)
-            .map(|folder| folder.display().to_string())
+            .map(abbreviate_home)
             .unwrap_or_default();
         let marker = if self.editor.buffer().is_modified() {
             "• "
@@ -458,10 +632,25 @@ impl MainWindow {
         ));
     }
 
-    fn show_error(&self, message: &str) {
-        let dialog = adw::AlertDialog::new(Some("Error"), Some(message));
+    fn show_error(&self, heading: &str, body: &str) {
+        let dialog = adw::AlertDialog::new(Some(heading), Some(body));
         dialog.add_response("ok", "_OK");
         dialog.present(Some(&self.window));
+    }
+}
+
+const ONLY_LOCAL_FILES: &str = "Only files on this computer can be opened and saved.";
+
+fn modification_time(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// `folder` with the home directory shortened to `~`, as file managers show it.
+fn abbreviate_home(folder: &Path) -> String {
+    match folder.strip_prefix(glib::home_dir()) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => folder.display().to_string(),
     }
 }
 
@@ -471,6 +660,10 @@ fn primary_menu() -> gio::Menu {
     file.append(Some("_Open…"), Some("win.open"));
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
+    let zoom = gio::Menu::new();
+    let zoom_item = gio::MenuItem::new(None, None);
+    zoom_item.set_attribute_value("custom", Some(&"zoom".to_variant()));
+    zoom.append_item(&zoom_item);
     let tools = gio::Menu::new();
     tools.append(Some("_Preferences"), Some("win.preferences"));
     tools.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
@@ -478,6 +671,7 @@ fn primary_menu() -> gio::Menu {
     about.append(Some("_About Counterpoint"), Some("app.about"));
     let menu = gio::Menu::new();
     menu.append_section(None, &file);
+    menu.append_section(None, &zoom);
     menu.append_section(None, &tools);
     menu.append_section(None, &about);
     menu
