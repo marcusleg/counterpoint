@@ -1,6 +1,7 @@
 //! GTK checks for the editor buffer and chat markup. GTK must run on the thread that initialised
 //! it, so this test has its own `main` (`harness = false`) and runs every check in turn.
-//! It needs a display; `dev/headless.sh cargo test` provides a private one.
+//! It needs a display; `dev/headless.sh cargo test` provides a private one and sets
+//! `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead of skipping silently.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -29,6 +30,10 @@ impl Checks {
 
 fn main() -> ExitCode {
     if gtk::init().is_err() {
+        if std::env::var_os("COUNTERPOINT_REQUIRE_DISPLAY").is_some() {
+            println!("FAIL: no display although COUNTERPOINT_REQUIRE_DISPLAY is set");
+            return ExitCode::FAILURE;
+        }
         println!("SKIPPED: no display");
         return ExitCode::SUCCESS;
     }

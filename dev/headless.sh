@@ -7,20 +7,41 @@ number="${HEADLESS_DISPLAY:-5}"
 display=":$number"
 # Display :N listens on broadway<N+1>.socket.
 socket="${XDG_RUNTIME_DIR:-/tmp}/broadway$((number + 1)).socket"
+log="$(mktemp)"
+
+# A socket left behind by a killed daemon would make the wait loop below pass instantly while
+# the new daemon is still starting, or fails to bind.
+rm -f "$socket"
+
+cleanup() {
+    kill "$daemon" 2>/dev/null || true
+    # gtk4-broadwayd does not delete its socket when killed.
+    rm -f "$socket" "$log"
+}
+trap cleanup EXIT INT TERM
 
 # Bind the daemon's web viewer to loopback only.
-gtk4-broadwayd --address 127.0.0.1 "$display" >/dev/null 2>&1 &
+gtk4-broadwayd --address 127.0.0.1 "$display" >"$log" 2>&1 &
 daemon=$!
-trap 'kill "$daemon" 2>/dev/null || true' EXIT INT TERM
 
 tries=0
 until [ -S "$socket" ]; do
+    if ! kill -0 "$daemon" 2>/dev/null; then
+        echo "gtk4-broadwayd exited before creating $socket" >&2
+        cat "$log" >&2
+        exit 1
+    fi
     tries=$((tries + 1))
     if [ "$tries" -gt 50 ]; then
-        echo "gtk4-broadwayd did not start on $display" >&2
+        echo "gtk4-broadwayd did not create $socket within 5s" >&2
+        cat "$log" >&2
         exit 1
     fi
     sleep 0.1
 done
 
-GDK_BACKEND=broadway BROADWAY_DISPLAY="$display" "$@"
+# COUNTERPOINT_REQUIRE_DISPLAY makes the test binaries fail loudly instead of printing SKIPPED if
+# this display turns out not to be usable, instead of silently passing. dbus-run-session gives
+# the command its own private session bus, so a headless run can never forward to, or be
+# activated by, a Counterpoint instance on the user's own D-Bus session.
+COUNTERPOINT_REQUIRE_DISPLAY=1 GDK_BACKEND=broadway BROADWAY_DISPLAY="$display" dbus-run-session -- "$@"
