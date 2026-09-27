@@ -11,58 +11,62 @@ An ADR in `docs/adr/` records one decision the user made, in the user's words, s
 that the user reads all of it. The record holds only what the user said or approved. The
 codebase shows what was built, never why, and supplies nothing for the record.
 
-The user reviews the whole ADR in chat before it exists as a file. Urgency ("just write it")
-moves the review earlier, never past the user. When the user cannot answer, the draft waits in
-chat and nothing is written.
+The user reviews the record as a file, reading the diff. Chat carries the path and whatever
+needs their attention, never the text of the ADR.
 
 ## Process
 
 1. **Collect from the conversation:** the decision, its reasons, the alternatives the user
-   weighed, and what the decision costs. Where one of these is missing, ask for it. Put all
-   questions in one message. A decision made before the conversation is collected the same
-   way: ask the user, do not reconstruct it from code or git history.
-2. **Draft the ADR in chat** using [template.md](template.md) and the budget below. Each
-   sentence traces back to something the user said. A sentence that only follows from what
-   they said is marked `[inferred]` so they can strike it; the marker goes when they keep
-   it. Ask whether the draft may be written as is.
-3. **Write the approved text** to `docs/adr/NNNN-short-title.md`, unchanged. `NNNN` is the
-   next unused four-digit number. The title states the decision ("Use GtkSourceView for the
-   editor"). The ADR goes in the same pull request as the change it belongs to, or in its
-   own when it records a decision made earlier.
+   weighed, and what the decision costs. A decision made before the conversation is collected
+   the same way: ask the user, do not reconstruct it from code or git history.
+2. **Write the draft** to `docs/adr/NNNN-short-title.md` from [template.md](template.md).
+   `NNNN` is the next unused four-digit number. The title states the decision ("Use
+   GtkSourceView for the editor"). Status is `draft`; the date is the one the user named
+   for the decision, or empty. Each sentence traces back to something the user said. A
+   sentence that only follows from what they said starts with `[inferred]` so they can
+   strike it. A part the user has not supplied is a one-line placeholder in brackets, not a
+   guess, also when the user asked for a finished record and is away.
+3. **Report in a few lines:** the path, the placeholders, the inferred sentences, and any
+   question the draft raised. Put all questions in one message.
+4. **Finish on the user's word.** Their edits stand. Their answers replace the placeholders.
+   When they say the decision is accepted or rejected, set the status and the date they name
+   and remove any remaining `[inferred]` markers. The ADR goes in the same pull request as
+   the change it belongs to, or in its own when it records a decision made earlier.
 
-## Budget
+## Shape
 
-A finished ADR fits on one screen: at most 200 words below the header table.
+Each part is as long as what the user said, and no longer:
 
 | Part | Size |
 |---|---|
 | Lead paragraph | One or two sentences: the kind of decision and what called for it |
-| Decision | One or two sentences, then the reasons in at most three sentences |
-| Consequences | At most three bullets, one sentence each: what future work must respect, what was given up |
-| Context | One paragraph, at most four sentences; left out when it would repeat the lead or the reasons |
-| Alternatives considered | At most three, one `###` each, one or two sentences: what it was and why not |
+| Decision | One or two sentences, then the reasons, a sentence each |
+| Consequences | One bullet per thing future work must respect or that was given up, one sentence each |
+| Context | One paragraph; left out when it would repeat the lead or the reasons |
+| Alternatives considered | One `###` per alternative the user weighed, one or two sentences: what it was and why not |
 
 Things are named as the user names them. Source files, functions, crates and numbers read
 from the code stay in the code.
 
 ## Status and date
 
-- `draft` while the user has not yet accepted the decision. The date cell stays empty.
-- `accepted` or `rejected` once they have, with the date the user decided.
+- `draft` until the user has reviewed the file and said the decision stands.
+- `accepted` or `rejected` once they have.
+- The date is the day the user decided, as they named it. It stays empty until they do.
 - `superseded by ADR-NNNN` when a later ADR replaces it.
 
 ## Amending and superseding
 
 - **Amend** when the broad decision still holds but a detail changed. Change the affected
   sentences and add a dated line under `## Amendments`, created on the first amendment. The
-  changed text goes through the same chat review.
+  user reviews the diff as for a new record.
 - **Supersede** when the decision is revoked and a new one takes its place. Write a new ADR
   and set the old one's status to `superseded by ADR-NNNN`. Its text otherwise stays as it was.
 
 ## Common mistakes
 
-- Filling gaps from `src/`, the PRD or git history instead of asking the user.
+- Filling gaps from `src/`, the PRD or git history instead of leaving a placeholder and asking.
 - Listing alternatives the user never considered, to make the record look thorough.
-- Writing the file first and offering the user a review afterwards.
+- Pasting the ADR into chat, in full or in part, instead of pointing at the file.
 - Recording implementation detail the user would skim past.
 - Marking a decision `accepted` on a date the user did not name.
