@@ -86,12 +86,13 @@ Primary menu, three sections, accelerators shown next to each entry, following t
 standard primary-menu group (Preferences, Keyboard Shortcuts, Help, About; no Quit or Close in
 the primary menu):
 
-1. Open… · Save · Save As…
+1. New · Open… · Save · Save As…
 2. Preferences · Keyboard Shortcuts
 3. About Counterpoint
 
 | Action | Accelerator |
 |---|---|
+| `win.new` | Ctrl+N |
 | `win.open` | Ctrl+O |
 | `win.save` | Ctrl+S |
 | `win.save-as` | Ctrl+Shift+S |
@@ -138,6 +139,10 @@ the nearest step, when the window is created.
 
 ## File handling
 
+- New: after the same unsaved-changes guard as Open, `MainWindow::reset_document` clears the
+  document (`EditorView::load("")`, so there is nothing to undo and it is unmodified), sets the
+  path to `None`, resets `crlf` to `false`, and updates the title to "Untitled" with an empty
+  subtitle. The chat conversation, the remembered folder and the zoom level are untouched.
 - Open: `GtkFileDialog` with filters "Markdown files" (`*.md`, `*.markdown`) and "All files"; its
   initial folder is `State::load().remembered_folder()` (the last file's folder, if it still
   exists as a directory). Reads with `document::read_file`, then `document::from_disk`; stores
@@ -150,12 +155,12 @@ the nearest step, when the window is created.
 - Remembering a folder loads the state file, sets `last_folder` to the saved file's parent, and
   saves it back (`MainWindow::remember_folder`); a failure to save is ignored, since the state is
   a convenience and must never interrupt the user.
-- Unsaved-changes guard: Open, the window's `close-request` and Quit share one helper,
+- Unsaved-changes guard: New, Open, the window's `close-request` and Quit share one helper,
   `confirm_discard(then)`. When the buffer is modified it shows an `AdwAlertDialog` ("Save
   changes?") with responses Cancel (close response, so Escape cancels), Discard (destructive) and Save
   (suggested and default, so Enter saves). Save runs Save (or Save As) and continues only if the save succeeded; Discard
   continues; Cancel does nothing. `close-request` returns `Propagation::Stop` while the dialog is
-  pending and closes the window once the user saves or discards. While the alert (or a save it started) is pending, further close, Quit or Open requests are ignored, so only one alert is ever shown. Quit calls `window.close()`.
+  pending and closes the window once the user saves or discards. While the alert (or a save it started) is pending, further close, Quit, New or Open requests are ignored, so only one alert is ever shown. Quit calls `window.close()`.
 - File errors appear in an `AdwAlertDialog` titled "Error" with an OK response.
 
 ## Chat pane

@@ -214,6 +214,7 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         .clone();
     let menu_model = menu_button.menu_model().expect("primary menu has a model");
     let expected_labels = [
+        "_New".to_string(),
         "_Open…".to_string(),
         "_Save".to_string(),
         "Save _As…".to_string(),
@@ -324,6 +325,34 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
     checks.check(
         State::load_from(&state_path).zoom == Some(110),
         "the zoom level is persisted to the state file",
+    );
+
+    // win.new: the unsaved-changes guard sees an unmodified buffer here, so it proceeds without
+    // an alert. The buffer already holds "Some example text." from the checks above.
+    buffer.set_modified(false);
+    window
+        .activate_action("win.new", None)
+        .expect("win.new exists");
+    let main_context = glib::MainContext::default();
+    for _ in 0..200 {
+        if buffer.char_count() == 0 {
+            break;
+        }
+        main_context.iteration(true);
+    }
+    checks.check(buffer.char_count() == 0, "win.new empties the editor");
+    checks.check(
+        !buffer.is_modified(),
+        "win.new leaves the buffer unmodified",
+    );
+    checks.check(!buffer.can_undo(), "win.new leaves nothing to undo");
+    let window_title = title_widget
+        .clone()
+        .downcast::<adw::WindowTitle>()
+        .expect("window title widget");
+    checks.check(
+        window_title.title() == "Untitled",
+        "win.new resets the title to \"Untitled\"",
     );
 
     let second = MainWindow::new(app);
