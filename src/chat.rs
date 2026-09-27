@@ -26,6 +26,8 @@ pub enum Entry {
         explanation: String,
         edits: Vec<Edit>,
         state: ProposalState,
+        /// The model's reply as received, which is what it sees as its own turn in the history.
+        reply: String,
     },
 }
 
@@ -37,11 +39,12 @@ pub struct RequestTicket {
     user_input: String,
 }
 
+/// The entries are the only state: the history sent to the model is derived from them, so
+/// persisting the conversation means persisting the entries.
 #[derive(Debug, Default)]
 pub struct Conversation {
     entries: Vec<Entry>,
-    history: Vec<ChatMessage>,
-    /// Incremented on every reset; replies from older generations are discarded.
+    /// Incremented on every reset or cancellation; replies from older generations are discarded.
     generation: u64,
     busy: bool,
 }
@@ -51,8 +54,29 @@ impl Conversation {
         &self.entries
     }
 
-    pub fn history(&self) -> &[ChatMessage] {
-        &self.history
+    /// The completed turns as the model sees them: every user message that got a reply,
+    /// followed by that reply. Failed, cancelled and in-flight requests are left out.
+    pub fn history(&self) -> Vec<ChatMessage> {
+        let mut history = Vec::with_capacity(self.entries.len());
+        for (index, entry) in self.entries.iter().enumerate() {
+            match entry {
+                Entry::User { text } => {
+                    let answered = matches!(
+                        self.entries.get(index + 1),
+                        Some(Entry::Assistant { .. } | Entry::Proposal { .. })
+                    );
+                    if answered {
+                        history.push(ChatMessage::user(text.clone()));
+                    }
+                }
+                Entry::Assistant { text } => history.push(ChatMessage::assistant(text.clone())),
+                Entry::Proposal { reply, .. } => {
+                    history.push(ChatMessage::assistant(reply.clone()))
+                }
+                Entry::Error { .. } => {}
+            }
+        }
+        history
     }
 
     pub fn is_busy(&self) -> bool {
@@ -88,22 +112,44 @@ impl Conversation {
         }
         self.busy = false;
         match result {
-            Err(message) => self.entries.push(Entry::Error { text: message }),
-            Ok(reply) => {
-                self.history.push(ChatMessage::user(ticket.user_input));
-                self.history.push(ChatMessage::assistant(reply.clone()));
-                self.entries.push(entry_for_reply(ticket.mode, reply));
-            }
+            Err(message) => self.push_error(message),
+            Ok(reply) => self.entries.extend(entries_for_reply(ticket.mode, reply)),
         }
         true
+    }
+
+    /// Abandons the in-flight request: its reply is discarded when it arrives. Returns the
+    /// user's message, removed from the conversation so it can go back into the input.
+    pub fn cancel_request(&mut self) -> Option<String> {
+        if !self.busy {
+            return None;
+        }
+        self.busy = false;
+        self.generation += 1;
+        match self.entries.pop() {
+            Some(Entry::User { text }) => Some(text),
+            Some(other) => {
+                self.entries.push(other);
+                None
+            }
+            None => None,
+        }
     }
 
     /// Starts over in a fresh context.
     pub fn reset(&mut self) {
         self.entries.clear();
-        self.history.clear();
         self.generation += 1;
         self.busy = false;
+    }
+
+    /// Adds an error entry, unless the same error is already the last entry: clicking Apply
+    /// repeatedly on a stale proposal should not fill the conversation with copies.
+    fn push_error(&mut self, text: String) {
+        if matches!(self.entries.last(), Some(Entry::Error { text: last }) if *last == text) {
+            return;
+        }
+        self.entries.push(Entry::Error { text });
     }
 
     /// Applies a pending proposal to `document_md` and returns the new Markdown. On failure the
@@ -126,7 +172,7 @@ impl Conversation {
             }
             Err(message) => {
                 let text = format!("Could not apply the proposal. {message}");
-                self.entries.push(Entry::Error { text: text.clone() });
+                self.push_error(text.clone());
                 Err(text)
             }
         }
@@ -143,20 +189,29 @@ impl Conversation {
     }
 }
 
-fn entry_for_reply(mode: Mode, reply: String) -> Entry {
+/// The entries a reply turns into: one message or proposal, or, for a Ghostwriting reply whose
+/// edits cannot be read, the reply as a message followed by a short error, so the reply stays
+/// readable and the user can ask the model to fix its formatting.
+fn entries_for_reply(mode: Mode, reply: String) -> Vec<Entry> {
     if mode == Mode::Sparring {
-        return Entry::Assistant { text: reply };
+        return vec![Entry::Assistant { text: reply }];
     }
     match proposal::parse(&reply) {
-        Ok(parsed) if parsed.edits.is_empty() => Entry::Assistant { text: reply },
-        Ok(parsed) => Entry::Proposal {
+        Ok(parsed) if parsed.edits.is_empty() => vec![Entry::Assistant { text: reply }],
+        Ok(parsed) => vec![Entry::Proposal {
             explanation: parsed.explanation,
             edits: parsed.edits,
             state: ProposalState::Pending,
-        },
-        Err(error) => Entry::Error {
-            text: format!("Could not read the proposed edits ({error}). The reply was:\n\n{reply}"),
-        },
+            reply,
+        }],
+        Err(error) => vec![
+            Entry::Assistant { text: reply },
+            Entry::Error {
+                text: format!(
+                    "Could not read the proposed edits: {error}. Ask for the change again."
+                ),
+            },
+        ],
     }
 }
 
@@ -221,7 +276,15 @@ mod tests {
                     replacement: "New text.".to_string()
                 }],
                 state: ProposalState::Pending,
+                reply: GHOST_REPLY.to_string(),
             }
+        );
+        assert_eq!(
+            conversation.history(),
+            vec![
+                ChatMessage::user("Please help"),
+                ChatMessage::assistant(GHOST_REPLY)
+            ]
         );
     }
 
@@ -237,16 +300,24 @@ mod tests {
     }
 
     #[test]
-    fn malformed_edits_become_an_error_entry_with_the_raw_reply() {
+    fn malformed_edits_show_the_reply_followed_by_an_error() {
         let reply = "```original\nOld text.\n```";
         let conversation = conversation_with_reply(Mode::Ghostwriting, reply);
-        match &conversation.entries()[1] {
+        assert_eq!(
+            conversation.entries()[1],
+            Entry::Assistant {
+                text: reply.to_string()
+            }
+        );
+        match &conversation.entries()[2] {
             Entry::Error { text } => {
                 assert!(text.contains("Could not read the proposed edits"), "{text}");
-                assert!(text.contains(reply), "{text}");
+                assert!(text.contains("without a `replacement` block"), "{text}");
             }
             other => panic!("expected error entry, got {other:?}"),
         }
+        // The reply stays in the history, so "fix your formatting" has something to refer to.
+        assert_eq!(conversation.history().len(), 2);
     }
 
     #[test]
@@ -254,7 +325,7 @@ mod tests {
         let conversation = conversation_with_reply(Mode::Sparring, "Answer");
         assert_eq!(
             conversation.history(),
-            &[
+            vec![
                 ChatMessage::user("Please help"),
                 ChatMessage::assistant("Answer")
             ]
@@ -301,11 +372,55 @@ mod tests {
         assert!(conversation.finish_request(new, Ok("new reply".to_string())));
         assert_eq!(
             conversation.history(),
-            &[
+            vec![
                 ChatMessage::user("New"),
                 ChatMessage::assistant("new reply")
             ]
         );
+    }
+
+    #[test]
+    fn cancel_removes_the_pending_message_and_discards_the_late_reply() {
+        let mut conversation = conversation_with_reply(Mode::Sparring, "Answer");
+        let ticket = conversation
+            .begin_request(Mode::Sparring, "Never mind")
+            .unwrap();
+        assert_eq!(
+            conversation.cancel_request(),
+            Some("Never mind".to_string())
+        );
+        assert!(!conversation.is_busy());
+        assert_eq!(conversation.entries().len(), 2);
+
+        assert!(!conversation.finish_request(ticket, Ok("late".to_string())));
+        assert_eq!(conversation.entries().len(), 2);
+        assert_eq!(conversation.history().len(), 2);
+        assert_eq!(conversation.cancel_request(), None);
+    }
+
+    #[test]
+    fn history_skips_failed_turns_and_errors() {
+        let mut conversation = Conversation::default();
+        let ticket = conversation.begin_request(Mode::Sparring, "One").unwrap();
+        conversation.finish_request(ticket, Err("down".to_string()));
+        let ticket = conversation.begin_request(Mode::Sparring, "Two").unwrap();
+        conversation.finish_request(ticket, Ok("Reply".to_string()));
+        let ticket = conversation.begin_request(Mode::Sparring, "Three").unwrap();
+        assert_eq!(
+            conversation.history(),
+            vec![ChatMessage::user("Two"), ChatMessage::assistant("Reply")]
+        );
+        conversation.finish_request(ticket, Ok("More".to_string()));
+        assert_eq!(conversation.history().len(), 4);
+    }
+
+    #[test]
+    fn repeated_failed_apply_adds_one_error() {
+        let mut conversation = conversation_with_reply(Mode::Ghostwriting, GHOST_REPLY);
+        assert!(conversation.apply_proposal(1, "Other.").is_err());
+        assert!(conversation.apply_proposal(1, "Other.").is_err());
+        assert_eq!(conversation.entries().len(), 3);
+        assert!(matches!(conversation.entries()[2], Entry::Error { .. }));
     }
 
     #[test]

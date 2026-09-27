@@ -15,11 +15,14 @@ impl ModelRequests {
     /// Starts a request for `(base_url, api_key)`. Returns `None` if the same pair was requested
     /// last and `force` is false.
     pub fn begin(&mut self, base_url: &str, api_key: &str, force: bool) -> Option<Ticket> {
-        let pair = (base_url.to_string(), api_key.to_string());
-        if !force && self.last_requested.as_ref() == Some(&pair) {
+        let unchanged = self
+            .last_requested
+            .as_ref()
+            .is_some_and(|(url, key)| url == base_url && key == api_key);
+        if !force && unchanged {
             return None;
         }
-        self.last_requested = Some(pair);
+        self.last_requested = Some((base_url.to_string(), api_key.to_string()));
         self.generation += 1;
         Some(Ticket(self.generation))
     }
