@@ -435,12 +435,12 @@ impl MainWindow {
     /// Rebuilds **Open Recent** from the recent files. Each entry opens its file through
     /// `win.open-uri`, and so through the unsaved-changes guard.
     fn update_recent_menu(&self) {
-        let home = glib::home_dir();
         // A copy, so no borrow of the state is held while the menu emits `items-changed`.
         let recent_files = self.state.borrow().recent_files.clone();
+        let labels = recent_labels(&recent_files, &glib::home_dir());
         self.recent_menu.remove_all();
-        for path in &recent_files {
-            let item = gio::MenuItem::new(Some(&recent_label(path, &home)), None);
+        for (path, label) in recent_files.iter().zip(labels) {
+            let item = gio::MenuItem::new(Some(&label), None);
             let uri = gio::File::for_path(path).uri();
             item.set_action_and_target_value(Some("win.open-uri"), Some(&uri.to_variant()));
             self.recent_menu.append_item(&item);
@@ -688,28 +688,53 @@ fn abbreviate_home(folder: &Path, home: &Path) -> String {
     }
 }
 
-/// The longest file name or folder an **Open Recent** entry shows; menu labels do not ellipsize,
-/// and one long entry would widen the whole main menu.
-const RECENT_PART_MAX_CHARS: usize = 30;
+/// The longest file name and folder an **Open Recent** entry shows. Menu labels do not
+/// ellipsize, and every submenu is as wide as the widest one, so a long entry would widen the
+/// whole main menu.
+const RECENT_NAME_MAX_CHARS: usize = 30;
+const RECENT_FOLDER_MAX_CHARS: usize = 20;
 
-/// The **Open Recent** entry for `path`: "post.md — ~/blog", each part shortened in the middle
-/// if it is long. Underscores are doubled because menu labels treat a single one as a mnemonic
-/// marker.
-fn recent_label(path: &Path, home: &Path) -> String {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
-    let folder = path
-        .parent()
-        .map(|folder| abbreviate_home(folder, home))
-        .unwrap_or_default();
-    format!(
-        "{} — {}",
-        shorten_middle(&name, RECENT_PART_MAX_CHARS),
-        shorten_middle(&folder, RECENT_PART_MAX_CHARS)
-    )
-    .replace('_', "__")
+/// The **Open Recent** entries for `paths`: each file's name, plus its folder ("readme.md —
+/// ~/blog") when another entry has the same name. Long names are shortened in the middle, long
+/// folders at the start. Underscores are doubled because menu labels treat a single one as a
+/// mnemonic marker.
+fn recent_labels(paths: &[PathBuf], home: &Path) -> Vec<String> {
+    let name = |path: &Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    paths
+        .iter()
+        .map(|path| {
+            let own_name = name(path);
+            let mut label = shorten_middle(&own_name, RECENT_NAME_MAX_CHARS);
+            if paths.iter().filter(|other| name(other) == own_name).count() > 1 {
+                let folder = path
+                    .parent()
+                    .map(|folder| abbreviate_home(folder, home))
+                    .unwrap_or_default();
+                label = format!(
+                    "{label} — {}",
+                    shorten_folder(&folder, RECENT_FOLDER_MAX_CHARS)
+                );
+            }
+            label.replace('_', "__")
+        })
+        .collect()
+}
+
+/// `folder` if it has at most `max` characters, otherwise "…" followed by its end, `max`
+/// characters at most: the last folders that fit whole ("…/personal-blog"), or else the end of
+/// the last one.
+fn shorten_folder(folder: &str, max: usize) -> String {
+    let chars: Vec<char> = folder.chars().collect();
+    if chars.len() <= max {
+        return folder.to_string();
+    }
+    let tail = &chars[chars.len() - (max - 1)..];
+    let start = tail.iter().position(|&c| c == '/').unwrap_or(0);
+    format!("…{}", tail[start..].iter().collect::<String>())
 }
 
 /// `text` if it has at most `max` characters, otherwise its start and end joined by "…", `max`
@@ -774,39 +799,62 @@ fn file_dialog(title: &str) -> gtk::FileDialog {
 mod tests {
     use super::*;
 
-    #[test]
-    fn recent_label_shows_the_file_name_and_its_folder_under_home() {
-        let label = recent_label(Path::new("/home/u/blog/post.md"), Path::new("/home/u"));
-        assert_eq!(label, "post.md — ~/blog");
+    fn labels(paths: &[&str]) -> Vec<String> {
+        let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        recent_labels(&paths, Path::new("/home/u"))
     }
 
     #[test]
-    fn recent_label_shows_a_folder_outside_home_in_full() {
-        let label = recent_label(Path::new("/srv/notes/post.md"), Path::new("/home/u"));
-        assert_eq!(label, "post.md — /srv/notes");
+    fn recent_labels_show_only_the_file_name() {
+        assert_eq!(
+            labels(&["/home/u/blog/post.md", "/srv/notes/todo.md"]),
+            ["post.md", "todo.md"]
+        );
     }
 
     #[test]
-    fn recent_label_shortens_a_long_name_and_folder_in_the_middle() {
-        let label = recent_label(
-            Path::new(
+    fn recent_labels_add_the_folder_when_two_files_share_a_name() {
+        assert_eq!(
+            labels(&[
+                "/home/u/blog/readme.md",
+                "/home/u/blog/post.md",
+                "/srv/notes/readme.md",
+            ]),
+            ["readme.md — ~/blog", "post.md", "readme.md — /srv/notes"]
+        );
+    }
+
+    #[test]
+    fn recent_labels_shorten_a_long_name_and_folder_in_the_middle() {
+        assert_eq!(
+            labels(&[
                 "/home/u/Documents/Writing/Blog/2026/drafts-for-review/\
                  a-rather-long-article-title-about-writing.md",
-            ),
-            Path::new("/home/u"),
-        );
-        assert_eq!(
-            label,
-            "a-rather-long-…bout-writing.md — ~/Documents/Wr…afts-for-review"
+                "/home/u/a-rather-long-article-title-about-writing.md",
+            ]),
+            [
+                "a-rather-long-…bout-writing.md — …/drafts-for-review",
+                "a-rather-long-…bout-writing.md — ~",
+            ]
         );
     }
 
     #[test]
-    fn recent_label_doubles_underscores_so_they_are_not_mnemonics() {
-        let label = recent_label(
-            Path::new("/home/u/my_blog/draft_1.md"),
-            Path::new("/home/u"),
+    fn recent_labels_cut_a_long_folder_inside_its_last_part_if_that_alone_is_too_long() {
+        assert_eq!(
+            labels(&[
+                "/home/u/an-extremely-long-folder-name/post.md",
+                "/srv/post.md"
+            ]),
+            ["post.md — …ly-long-folder-name", "post.md — /srv"]
         );
-        assert_eq!(label, "draft__1.md — ~/my__blog");
+    }
+
+    #[test]
+    fn recent_labels_double_underscores_so_they_are_not_mnemonics() {
+        assert_eq!(
+            labels(&["/home/u/my_blog/draft_1.md", "/srv/draft_1.md"]),
+            ["draft__1.md — ~/my__blog", "draft__1.md — /srv"]
+        );
     }
 }
