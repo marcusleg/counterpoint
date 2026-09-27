@@ -104,10 +104,12 @@ fn menu_labels(model: &gio::MenuModel) -> Vec<String> {
 }
 
 fn run_checks(app: &adw::Application, checks: &mut Checks) {
-    let root = app
-        .active_window()
-        .expect("the window is presented")
-        .upcast::<gtk::Widget>();
+    let window = app.active_window().expect("the window is presented");
+    let app_window = window
+        .clone()
+        .downcast::<adw::ApplicationWindow>()
+        .expect("the active window is an AdwApplicationWindow");
+    let root = window.clone().upcast::<gtk::Widget>();
     let mut widgets = Vec::new();
     collect_widgets(&root, &mut widgets);
 
@@ -213,5 +215,81 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
     checks.check(
         menu_labels(&menu_model) == expected_labels,
         "the primary menu follows the GNOME HIG and has no Quit item",
+    );
+
+    let zoom_box = widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::Box>())
+        .find(|b| b.css_classes().iter().any(|class| class == "linked"))
+        .expect("zoom controls box")
+        .clone();
+    checks.check(
+        zoom_box.ancestor(adw::HeaderBar::static_type()).is_some(),
+        "the zoom controls live inside the header bar",
+    );
+    let zoom_widget = zoom_box.upcast::<gtk::Widget>();
+    let menu_widget = menu_button.upcast::<gtk::Widget>();
+    let zoom_index = widgets.iter().position(|w| *w == zoom_widget);
+    let menu_index = widgets.iter().position(|w| *w == menu_widget);
+    checks.check(
+        zoom_index.is_some() && zoom_index < menu_index,
+        "the zoom controls are packed at the header bar's start, before the primary menu",
+    );
+
+    let zoom_label = widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::Button>())
+        .find(|b| b.label().as_deref().is_some_and(|l| l.ends_with('%')))
+        .expect("zoom label button")
+        .clone();
+    checks.check(
+        zoom_label.label().as_deref() == Some("100%"),
+        "zoom starts at 100%",
+    );
+
+    window
+        .activate_action("win.zoom-in", None)
+        .expect("win.zoom-in exists");
+    checks.check(
+        zoom_label.label().as_deref() == Some("110%"),
+        "zoom-in increases the percentage by one step",
+    );
+
+    window
+        .activate_action("win.zoom-reset", None)
+        .expect("win.zoom-reset exists");
+    checks.check(
+        zoom_label.label().as_deref() == Some("100%"),
+        "zoom-reset returns to 100%",
+    );
+
+    for _ in 0..5 {
+        window
+            .activate_action("win.zoom-out", None)
+            .expect("win.zoom-out exists");
+    }
+    checks.check(
+        zoom_label.label().as_deref() == Some("50%"),
+        "zoom-out clamps at the minimum",
+    );
+    let zoom_out_action = app_window
+        .lookup_action("zoom-out")
+        .and_downcast::<gio::SimpleAction>()
+        .expect("win.zoom-out action");
+    checks.check(
+        !zoom_out_action.is_enabled(),
+        "zoom-out disables itself at the minimum",
+    );
+
+    window
+        .activate_action("win.zoom-reset", None)
+        .expect("win.zoom-reset exists");
+    checks.check(
+        zoom_label.label().as_deref() == Some("100%"),
+        "zoom-reset returns to 100% again",
+    );
+    checks.check(
+        zoom_out_action.is_enabled(),
+        "zoom-out re-enables once away from the minimum",
     );
 }

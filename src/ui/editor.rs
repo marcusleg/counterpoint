@@ -1,15 +1,21 @@
 //! The Markdown source editor: a GtkSourceView that holds the exact file text.
 
+use gtk::gdk;
 use gtk::prelude::*;
 use sourceview5::prelude::*;
 
 use crate::text_diff;
 
-/// Cheap to clone; clones share the same view and buffer.
+/// The style class the zoom level's CSS provider targets.
+const ZOOM_CLASS: &str = "counterpoint-editor";
+
+/// Cheap to clone; clones share the same view, buffer and zoom style provider.
 #[derive(Clone)]
 pub struct EditorView {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
+    /// Registered on the display once, in `new`; `set_zoom` only reloads its CSS.
+    zoom_style: gtk::CssProvider,
 }
 
 impl Default for EditorView {
@@ -33,7 +39,22 @@ impl EditorView {
         view.set_right_margin(24);
         view.set_top_margin(16);
         view.set_bottom_margin(16);
-        Self { view, buffer }
+        view.add_css_class(ZOOM_CLASS);
+
+        let zoom_style = gtk::CssProvider::new();
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &zoom_style,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
+        Self {
+            view,
+            buffer,
+            zoom_style,
+        }
     }
 
     pub fn widget(&self) -> &sourceview5::View {
@@ -80,6 +101,12 @@ impl EditorView {
         self.buffer.delete(&mut start, &mut end);
         self.buffer.insert(&mut start, &span.replacement);
         self.buffer.end_user_action();
+    }
+
+    /// Scales the editor's font to `percent` of its default size.
+    pub fn set_zoom(&self, percent: u32) {
+        self.zoom_style
+            .load_from_string(&format!(".{ZOOM_CLASS} {{ font-size: {percent}%; }}"));
     }
 
     /// Uses the Adwaita style scheme matching `dark`.

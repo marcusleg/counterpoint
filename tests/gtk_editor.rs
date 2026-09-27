@@ -47,6 +47,7 @@ fn main() -> ExitCode {
     apply_is_one_undo_step(&mut checks);
     apply_leaves_text_outside_the_span_alone(&mut checks);
     apply_counts_characters(&mut checks);
+    zoom_changes_the_editor_font_size(&mut checks);
     chat_markup_is_valid_for_labels(&mut checks);
 
     println!("{} passed, {} failed", checks.passed, checks.failures);
@@ -167,6 +168,40 @@ fn apply_counts_characters(checks: &mut Checks) {
         editor.text() == "🙂 Grüße aus 日本, Erde!\n",
         "apply after multi-byte characters changes the right span",
     );
+}
+
+/// The pixel height of the editor's first line, once its style and layout are up to date. The
+/// zoom CSS provider is registered on the display, so the view must be realized and drawn (via
+/// `gtk::test_widget_wait_for_draw`, which pumps the main loop until a frame is rendered) for a
+/// style change to take effect; neither plain `MainContext` iteration nor
+/// `pango_context().font_description()` picks up a relative `font-size` set through CSS under
+/// Broadway, so this measures the rendered line height instead.
+fn first_line_height(window: &gtk::Window, editor: &EditorView) -> i32 {
+    gtk::test_widget_wait_for_draw(window);
+    let (_, height) = editor.widget().line_yrange(&editor.buffer().start_iter());
+    height
+}
+
+fn zoom_changes_the_editor_font_size(checks: &mut Checks) {
+    let editor = EditorView::new();
+    editor.load("One line of example text.");
+    let window = gtk::Window::new();
+    window.set_child(Some(editor.widget()));
+    window.present();
+
+    editor.set_zoom(100);
+    let height_100 = first_line_height(&window, &editor);
+
+    editor.set_zoom(200);
+    let height_200 = first_line_height(&window, &editor);
+
+    checks.check(
+        height_200 > height_100,
+        &format!(
+            "zooming to 200% increases the editor's line height ({height_100} -> {height_200})"
+        ),
+    );
+    window.destroy();
 }
 
 fn chat_markup_is_valid_for_labels(checks: &mut Checks) {
