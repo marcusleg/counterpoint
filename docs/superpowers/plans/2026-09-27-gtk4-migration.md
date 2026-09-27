@@ -18,7 +18,7 @@
 - Pure modules never import `gtk`, `adw`, `glib`, `gio` or `sourceview5`.
 - No `#[allow(...)]` to silence warnings. `cargo fmt --check` clean. `cargo build` shows no warnings from crate code.
 - The repository is public: tests, fixtures and docs use generic example text only — no personal articles, drafts, brand-voice material, local paths or employer details.
-- Byte checks use Python (`open(p, 'rb').read().count(...)`), never `grep -P` (ugrep on this machine gives false negatives). Never type escape sequences such as ` ` through an editing tool that might turn them into literal characters; the fixtures are produced only by `tests/fixtures/generate.py`.
+- Byte checks use Python (`open(p, 'rb').read().count(...)`), never `grep -P` (ugrep on this machine gives false negatives). Editing tools have silently turned backslash-u escape sequences into literal invisible characters (this happened while preparing this plan). Never write special characters or their escapes through an editing tool: the fixtures come only from `tests/fixtures/generate.py`, which is plain ASCII and builds them with `chr(0x...)`. Before each commit, scan changed files for unexpected invisible characters (Step 5 of Task 10 shows how).
 - GTK code is run only headless (`dev/headless.sh …`); never open a window on the user's desktop without asking.
 - Work on branch `gtk4-migration`. Commit with the repository's configured git identity; every commit message ends with the trailer line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` after a blank line. Do not push.
 
@@ -1033,19 +1033,27 @@ Note: for display `:N`, `gtk4-broadwayd` listens on `broadway<N+1>.socket`; `--a
 
 - [ ] **Step 2: Create `tests/fixtures/generate.py` and generate the fixtures**
 
+The script must stay pure ASCII; check with `python3 -c "d=open('tests/fixtures/generate.py','rb').read(); print(all(b < 128 for b in d))"` → `True`.
+
 `tests/fixtures/generate.py`:
 
 ````python
 #!/usr/bin/env python3
 """Writes the round-trip fixtures byte for byte and checks the special characters are there.
 
-Escapes are spelled out here so that no editor or tool can silently turn them into other
-characters. Run from the repository root: python3 tests/fixtures/generate.py
+This file is plain ASCII: the special characters are built with chr() so that no editor or
+tool can silently turn them into other characters. Run from the repository root:
+python3 tests/fixtures/generate.py
 """
 
 from pathlib import Path
 
 HERE = Path(__file__).parent
+
+NBSP = chr(0x00A0)  # no-break space
+NNBSP = chr(0x202F)  # narrow no-break space
+BOM = chr(0xFEFF)  # byte order mark
+LINE_SEPARATOR = chr(0x2028)
 
 CRLF = (
     "# Release notes\r\n"
@@ -1057,17 +1065,17 @@ CRLF = (
     "- second item\r\n"
 )
 
-NBSP = (
+NBSP_TEXT = (
     "# Prices\n"
     "\n"
-    "The ticket costs 20 EUR, and the trip takes 3 hours.\n"
-    "French typography puts a narrow space before colons : like this !\n"
+    "The ticket costs 20" + NBSP + "EUR, and the trip takes 3" + NBSP + "hours.\n"
+    "French typography puts a narrow space before colons" + NNBSP + ": like this" + NNBSP + "!\n"
     "Line with two trailing spaces for a hard break  \n"
     "next line.\n"
 )
 
 FRONT_MATTER = (
-    "﻿---\n"
+    BOM + "---\n"
     "title: \"An example post\"\n"
     "tags: [writing, example]\n"
     "draft: true\n"
@@ -1078,7 +1086,7 @@ FRONT_MATTER = (
     "# An example post\n"
     "\n"
     "Text with a trailing tab\t\n"
-    "and a line separator inside a paragraph.\n"
+    "and a line" + LINE_SEPARATOR + "separator inside a paragraph.\n"
     "\n"
     "<!--\n"
     "A multi-line comment\n"
@@ -1093,10 +1101,10 @@ FRONT_MATTER = (
 
 FIXTURES = {
     "crlf.md": (CRLF, {b"\r\n": 7}),
-    "nbsp.md": (NBSP, {" ".encode(): 2, " ".encode(): 2, b"  \n": 1}),
+    "nbsp.md": (NBSP_TEXT, {NBSP.encode(): 2, NNBSP.encode(): 2, b"  \n": 1}),
     "front-matter.md": (
         FRONT_MATTER,
-        {"﻿".encode(): 1, " ".encode(): 1, b"<!--": 2, b"\t\n": 1, b"\r": 0},
+        {BOM.encode(): 1, LINE_SEPARATOR.encode(): 1, b"<!--": 2, b"\t\n": 1, b"\r": 0},
     ),
 }
 
@@ -2945,6 +2953,24 @@ git diff main --name-only | xargs -r grep -nIE "/home/|/Users/|@[a-z0-9-]+\.[a-z
 ```
 
 Expected: only intended files; `privacy-ok` (or only generic example URLs such as `example.com`). Read the fixtures and README once more for personal text.
+
+Then check for invisible characters outside the fixtures (the fixtures contain them on purpose):
+
+```bash
+git diff main --name-only --diff-filter=AM | grep -v '^tests/fixtures/.*\.md$' | python3 -c "
+import sys, unicodedata
+bad = 0
+for path in sys.stdin.read().split():
+    for n, line in enumerate(open(path, encoding='utf-8', errors='replace').read().split(chr(10)), 1):
+        for c in line:
+            if unicodedata.category(c) in ('Zs', 'Cf', 'Zl', 'Zp', 'Cc') and c not in ' ' + chr(9) + chr(13):
+                bad += 1
+                print(path, n, hex(ord(c)))
+print('invisible-ok' if bad == 0 else f'{bad} invisible characters')
+"
+```
+
+Expected: `invisible-ok`.
 
 - [ ] **Step 6: Commit**
 
