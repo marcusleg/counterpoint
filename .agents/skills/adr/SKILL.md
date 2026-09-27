@@ -29,9 +29,8 @@ words, not quoted.
    strike it. A part the user has not supplied is a one-line placeholder in brackets, not a
    guess, also when the user asked for a finished record and is away.
 3. **Report in a few lines:** the file as `docs/adr/NNNN-short-title.md`, what the record
-   says in a sentence, the
-   placeholders, the inferred sentences, and any question the draft raised. Put all
-   questions in one message. After a change, say what changed and why.
+   says in a sentence, the placeholders, the inferred sentences, and any question the draft
+   raised. Put all questions in one message. After a change, say what changed and why.
 4. **Finish on the user's word.** Their edits stand. Their answers replace the placeholders.
    When they say the record or a change to it stands, remove the remaining `[inferred]`
    markers; when they say the decision is accepted or rejected, set the status and the date
