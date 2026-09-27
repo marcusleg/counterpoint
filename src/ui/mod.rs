@@ -1,5 +1,7 @@
 //! The GTK user interface.
 
+pub mod editor;
+
 use adw::prelude::*;
 use gtk::glib;
 
