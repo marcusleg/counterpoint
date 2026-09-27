@@ -527,12 +527,15 @@ impl ChatPane {
                 heading.add_css_class("dim-label");
                 card.append(&heading);
             }
-            let original = markup_label(
-                &format!("<s>{}</s>", chat_markup::escape(&edit.original)),
-                &edit.original,
-            );
-            original.add_css_class("edit-original");
-            card.append(&original);
+            // A blank original only occurs when writing into an empty document.
+            if !edit.original.trim().is_empty() {
+                let original = markup_label(
+                    &format!("<s>{}</s>", chat_markup::escape(&edit.original)),
+                    &edit.original,
+                );
+                original.add_css_class("edit-original");
+                card.append(&original);
+            }
             let replacement = if edit.replacement.is_empty() {
                 markup_label("<i>(delete)</i>", "(delete)")
             } else {
