@@ -2,6 +2,7 @@
 
 pub mod chat_pane;
 pub mod editor;
+pub mod options_dialog;
 
 use adw::prelude::*;
 use gtk::glib;
