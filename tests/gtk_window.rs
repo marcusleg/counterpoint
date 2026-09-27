@@ -87,6 +87,22 @@ fn collect_widgets(widget: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
     }
 }
 
+/// The labels of every item in every "section" link of `model`, in order.
+fn menu_labels(model: &gio::MenuModel) -> Vec<String> {
+    let mut labels = Vec::new();
+    for i in 0..model.n_items() {
+        let Some(section) = model.item_link(i, "section") else {
+            continue;
+        };
+        for j in 0..section.n_items() {
+            if let Some(value) = section.item_attribute_value(j, "label", None) {
+                labels.push(value.str().unwrap_or_default().to_string());
+            }
+        }
+    }
+    labels
+}
+
 fn run_checks(app: &adw::Application, checks: &mut Checks) {
     let root = app
         .active_window()
@@ -173,5 +189,25 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
     checks.check(
         chip.text() == "Selection: “Some”",
         "the selection chip shows the trimmed selection",
+    );
+
+    let menu_button = widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::MenuButton>())
+        .find(|b| b.icon_name().as_deref() == Some("open-menu-symbolic"))
+        .expect("primary menu button")
+        .clone();
+    let menu_model = menu_button.menu_model().expect("primary menu has a model");
+    let expected_labels = [
+        "_Open…".to_string(),
+        "_Save".to_string(),
+        "Save _As…".to_string(),
+        "_Preferences".to_string(),
+        "_Keyboard Shortcuts".to_string(),
+        "_About Counterpoint".to_string(),
+    ];
+    checks.check(
+        menu_labels(&menu_model) == expected_labels,
+        "the primary menu follows the GNOME HIG and has no Quit item",
     );
 }

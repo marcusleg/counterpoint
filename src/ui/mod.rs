@@ -2,7 +2,7 @@
 
 pub mod chat_pane;
 pub mod editor;
-pub mod options_dialog;
+pub mod preferences_dialog;
 pub mod window;
 
 use adw::prelude::*;
@@ -26,7 +26,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("win.open", "<Control>o", "Open"),
     ("win.save", "<Control>s", "Save"),
     ("win.save-as", "<Control><Shift>s", "Save As"),
-    ("win.options", "<Control>comma", "Options"),
+    ("win.preferences", "<Control>comma", "Preferences"),
     ("app.shortcuts", "<Control>question", "Keyboard Shortcuts"),
     ("app.quit", "<Control>q", "Quit"),
 ];
@@ -72,10 +72,27 @@ fn add_app_actions(app: &adw::Application) {
             shortcuts_dialog().present(app.active_window().as_ref());
         })
         .build();
-    app.add_action_entries([quit, shortcuts]);
+    let about = gio::ActionEntry::builder("about")
+        .activate(|app: &adw::Application, _, _| {
+            about_dialog().present(app.active_window().as_ref());
+        })
+        .build();
+    app.add_action_entries([quit, shortcuts, about]);
     for (action, accel, _) in SHORTCUTS {
         app.set_accels_for_action(action, &[accel]);
     }
+}
+
+fn about_dialog() -> adw::AboutDialog {
+    adw::AboutDialog::builder()
+        .application_name("Counterpoint")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments(env!("CARGO_PKG_DESCRIPTION"))
+        .developer_name("Marcus Legendre")
+        .license_type(gtk::License::MitX11)
+        .website("https://github.com/marcusleg/counterpoint")
+        .issue_url("https://github.com/marcusleg/counterpoint/issues")
+        .build()
 }
 
 fn shortcuts_dialog() -> adw::ShortcutsDialog {
