@@ -2,12 +2,10 @@
 
 use std::fmt;
 
-use serde::Serialize;
+const ORIGINAL_TAG: &str = "original";
+const REPLACEMENT_TAG: &str = "replacement";
 
-pub const ORIGINAL_TAG: &str = "original";
-pub const REPLACEMENT_TAG: &str = "replacement";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edit {
     pub original: String,
     pub replacement: String,
@@ -55,7 +53,8 @@ struct FencedBlock {
     content: String,
 }
 
-/// Returns the fence character, fence length and first info-string word of an opening fence.
+/// Returns the fence character, fence length and first info-string word (lower-cased, so
+/// `Original` counts as `original`) of an opening fence.
 fn opening_fence(line: &str) -> Option<(char, usize, String)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
@@ -72,7 +71,11 @@ fn opening_fence(line: &str) -> Option<(char, usize, String)> {
     if fence_char == '`' && info.contains('`') {
         return None;
     }
-    let tag = info.split_whitespace().next().unwrap_or("").to_string();
+    let tag = info
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     Some((fence_char, fence_len, tag))
 }
 
@@ -205,48 +208,69 @@ impl fmt::Display for ApplyError {
 
 impl std::error::Error for ApplyError {}
 
-/// One character of whitespace-normalized text and the byte range it covers in the source.
-struct Token {
-    ch: char,
-    start: usize,
-    end: usize,
+/// The document with every run of whitespace collapsed into one space, plus, for every
+/// character of that text, the byte range it covers in the source.
+struct Normalized {
+    text: String,
+    /// `(byte offset in `text`, source start, source end)` per normalized character.
+    chars: Vec<(usize, usize, usize)>,
 }
 
-/// Collapses every run of whitespace into a single `' '` token.
-fn normalize(text: &str) -> Vec<Token> {
-    let mut tokens: Vec<Token> = Vec::new();
-    for (start, ch) in text.char_indices() {
+fn normalize(source: &str) -> Normalized {
+    let mut text = String::with_capacity(source.len());
+    let mut chars: Vec<(usize, usize, usize)> = Vec::with_capacity(source.len());
+    for (start, ch) in source.char_indices() {
         let end = start + ch.len_utf8();
         if ch.is_whitespace() {
-            if let Some(last) = tokens.last_mut().filter(|last| last.ch == ' ') {
-                last.end = end;
+            if let Some(last) = chars.last_mut().filter(|_| text.ends_with(' ')) {
+                last.2 = end;
                 continue;
             }
-            tokens.push(Token {
-                ch: ' ',
-                start,
-                end,
-            });
+            chars.push((text.len(), start, end));
+            text.push(' ');
         } else {
-            tokens.push(Token { ch, start, end });
+            chars.push((text.len(), start, end));
+            text.push(ch);
         }
     }
-    tokens
+    Normalized { text, chars }
 }
 
-/// Byte ranges in the source of every occurrence of `needle` in `haystack`.
-fn occurrences(haystack: &[Token], needle: &[char]) -> Vec<(usize, usize)> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return Vec::new();
-    }
-    (0..=haystack.len() - needle.len())
-        .filter(|&i| {
-            haystack[i..i + needle.len()]
-                .iter()
-                .zip(needle)
-                .all(|(token, ch)| token.ch == *ch)
+/// Byte ranges in the source of every occurrence of `needle` in `haystack`. A match that runs
+/// into a word on either side (`cat` inside `concatenate`) does not count: the model quotes
+/// whole words, and the alternative is silently editing the wrong place.
+fn occurrences(source: &str, haystack: &Normalized, needle: &str) -> Vec<(usize, usize)> {
+    let needle_chars = needle.chars().count();
+    let first_is_word = needle.chars().next().is_some_and(char::is_alphanumeric);
+    let last_is_word = needle
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric);
+    haystack
+        .text
+        .match_indices(needle)
+        .map(|(byte, _)| {
+            let index = haystack
+                .chars
+                .binary_search_by_key(&byte, |(offset, _, _)| *offset)
+                .expect("match_indices returns character boundaries");
+            let (_, start, _) = haystack.chars[index];
+            let (_, _, end) = haystack.chars[index + needle_chars - 1];
+            (start, end)
         })
-        .map(|i| (haystack[i].start, haystack[i + needle.len() - 1].end))
+        .filter(|&(start, end)| {
+            let joined_before = first_is_word
+                && source[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_alphanumeric);
+            let joined_after = last_is_word
+                && source[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_alphanumeric);
+            !joined_before && !joined_after
+        })
         .collect()
 }
 
@@ -258,14 +282,11 @@ pub fn apply(document_md: &str, edits: &[Edit]) -> Result<String, ApplyError> {
 
     for (index, edit) in edits.iter().enumerate() {
         let number = index + 1;
-        let needle: Vec<char> = normalize(edit.original.trim())
-            .iter()
-            .map(|t| t.ch)
-            .collect();
+        let needle = normalize(edit.original.trim()).text;
         if needle.is_empty() {
             return Err(ApplyError::EmptyOriginal { edit: number });
         }
-        match occurrences(&haystack, &needle).as_slice() {
+        match occurrences(document_md, &haystack, &needle).as_slice() {
             [] => return Err(ApplyError::NotFound { edit: number }),
             [(start, end)] => spans.push((*start, *end, index)),
             found => {
@@ -333,6 +354,13 @@ mod parse_tests {
         let parsed = parse(reply).unwrap();
         assert_eq!(parsed.explanation, "Two changes.\n\nAnd also:");
         assert_eq!(parsed.edits, vec![edit("A", "B"), edit("C", "D")]);
+    }
+
+    #[test]
+    fn tags_are_matched_case_insensitively() {
+        let reply = "```Original\nOld\n```\n```REPLACEMENT\nNew\n```";
+        let parsed = parse(reply).unwrap();
+        assert_eq!(parsed.edits, vec![edit("Old", "New")]);
     }
 
     #[test]
@@ -474,6 +502,28 @@ mod apply_tests {
     fn missing_original_is_not_found() {
         let result = apply("Some text.\n", &[edit("Other text", "x")]);
         assert_eq!(result, Err(ApplyError::NotFound { edit: 1 }));
+    }
+
+    #[test]
+    fn a_match_inside_a_word_does_not_count() {
+        let result = apply("Let us concatenate.", &[edit("cat", "dog")]);
+        assert_eq!(result, Err(ApplyError::NotFound { edit: 1 }));
+        // With a real word present as well, only that one counts.
+        let result = apply("The cat can concatenate.", &[edit("cat", "dog")]);
+        assert_eq!(result, Ok("The dog can concatenate.".to_string()));
+        // Punctuation at the edges of the original needs no word boundary.
+        let result = apply("Say hello, world!", &[edit(", world", "")]);
+        assert_eq!(result, Ok("Say hello!".to_string()));
+        // Non-ASCII letters are word characters too.
+        let result = apply("Grüße", &[edit("Grü", "x")]);
+        assert_eq!(result, Err(ApplyError::NotFound { edit: 1 }));
+    }
+
+    #[test]
+    fn matching_ignores_whitespace_but_keeps_it_in_the_document() {
+        let doc = "One  two\n\nthree.\n";
+        let result = apply(doc, &[edit("two three", "2 3")]);
+        assert_eq!(result, Ok("One  2 3.\n".to_string()));
     }
 
     #[test]
