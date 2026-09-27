@@ -24,6 +24,9 @@ A release has three phases:
 
 Change nothing in this phase: no branch, no edits, no pushes.
 
+The version, Fedora and runtime checks below don't depend on each other: start all three at
+once (parallel tool calls in one turn) and draft the notes once the version check returns.
+
 ### Version
 
 ```sh
@@ -92,11 +95,18 @@ skips this round or the checks.
 ## 3. Release
 
 Work on a branch named `release-X.Y.Z` from an up-to-date `origin/main` (AGENTS.md: never
-commit to `main`). If `origin/main` moved since the preparation, [stop and ask](#stop-and-ask).
+commit to `main`). If `origin/main` moved since the preparation (`git rev-parse origin/main`
+after a fetch differs from the commit the preparation looked at), [stop and ask](#stop-and-ask).
+
+Workflow runs take minutes. Start every watch below as a background command where the harness
+supports one and wait for its completion notice instead of polling; elsewhere run it in the
+foreground. The exit status is the result, so the progress output goes to `/dev/null`; after a
+failure, read only `gh run view <run-id> --log-failed`.
 
 1. If the approved version differs from the one in `Cargo.toml`, set `version` there and run
    `cargo update -p counterpoint --offline` so `Cargo.lock` matches. The release builds use
-   `--locked` and fail on a stale lock file.
+   `--locked` and fail on a stale lock file. `cargo pkgid | sed 's/.*[#@]//'` must now print
+   X.Y.Z.
 2. Add the release to `data/de.marcusleg.Counterpoint.metainfo.xml`, newest first, creating
    `<releases>` after `<content_rating>` if it is missing:
    `<release version="X.Y.Z" date="YYYY-MM-DD"/>` (today's date).
@@ -104,39 +114,46 @@ commit to `main`). If `origin/main` moved since the preparation, [stop and ask](
    containers in `release.yml` and `ci.yml` and every Fedora version named in README.md
    (Install lists the two, newest first; Releases names the container). An approved runtime
    move changes the manifest, the `gnome-NN` image of the `flatpak` job and README.md.
-4. Run the development checks from README.md (fmt, clippy, tests under `dev/headless.sh`).
-5. Commit as `Release X.Y.Z`, push, and open the PR with `gh pr create`. Its description
-   records the approved notes under a `## Release notes` heading.
-6. Dry-run the packaging on the branch. The release job is skipped for untagged runs:
+4. Commit as `Release X.Y.Z`, push, and open the PR with `gh pr create`. Its description
+   records the approved notes under a `## Release notes` heading. Note the commit's hash
+   (`git rev-parse HEAD`) for step 8. The development checks don't run locally: the PR's CI
+   runs the same ones.
+5. Start the packaging dry run on the branch; the release job is skipped for untagged runs.
+   `gh workflow run release.yml --ref release-X.Y.Z` prints the new run's URL, which ends in
+   its run id.
+6. Wait for the dry run and the PR's CI in one background command. Both are already running,
+   so watching them one after the other takes no longer than watching them side by side:
    ```sh
-   gh workflow run release.yml --ref release-X.Y.Z
-   gh run list --workflow release.yml --event workflow_dispatch --commit "$(git rev-parse HEAD)"
-   gh run watch <run-id> --exit-status
+   gh run watch <run-id> --exit-status >/dev/null || echo "dry run failed"
+   gh pr checks release-X.Y.Z --watch --fail-fast >/dev/null || echo "CI failed"
    ```
-   A new run can take a few seconds to appear in `gh run list`; this holds for every run below.
-7. Wait for the PR's CI (`gh pr checks --watch`). When CI and the dry run pass, merge with
-   `gh pr merge --rebase --delete-branch` (AGENTS.md: rebase and merge by default) and delete
-   the local branch.
-8. Check `main` before tagging:
+   A commit that touches none of the paths `ci.yml` runs on (only the metainfo changed) gets no
+   CI: `gh pr checks` then prints `no checks reported` and exits 1, which is not a failure, and
+   the dry run alone decides.
+7. When both pass, merge with `gh pr merge --rebase --delete-branch` (AGENTS.md: rebase and
+   merge by default) and delete the local branch.
+8. Check that `main` holds exactly the tested release commit:
    ```sh
-   git switch main && git pull --ff-only
-   cargo pkgid | sed 's/.*[#@]//'      # must print X.Y.Z
-   gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)"   # watch it until it completes green
+   git fetch origin
+   git rev-parse 'origin/main^{tree}' '<release-commit>^{tree}'   # must print one hash twice
    ```
-9. Tag and push:
+   The rebase merge gives the commit a new hash but keeps its tree, which the PR's CI and the
+   dry run have checked, so `main`'s own CI run isn't awaited. A different tree means `main`
+   moved: [stop and ask](#stop-and-ask).
+9. Tag the fetched `origin/main` and push the tag:
    ```sh
-   git tag -a vX.Y.Z -m "Counterpoint X.Y.Z"
+   git tag -a vX.Y.Z -m "Counterpoint X.Y.Z" origin/main
    git push origin vX.Y.Z
    ```
-10. Watch the tag's Release run, then check the release:
+10. Watch the tag's Release run in the background, then check the release:
     ```sh
-    gh run list --workflow release.yml --event push --commit "$(git rev-parse HEAD)"
-    gh run watch <run-id> --exit-status
+    gh run list --workflow release.yml --event push --commit "$(git rev-parse 'vX.Y.Z^{commit}')"
+    gh run watch <run-id> --exit-status >/dev/null
     gh release view vX.Y.Z --json name,isPrerelease,assets -q '{name, isPrerelease, assets: [.assets[].name]}'
     ```
-    Expect the name `Counterpoint X.Y.Z`, `isPrerelease` true exactly when the version has a
-    suffix, and two assets: `counterpoint-X.Y.Z-x86_64.flatpak` and
-    `counterpoint-X.Y.Z-1.x86_64.rpm`.
+    The run can take a few seconds to appear in `gh run list`. Expect the name
+    `Counterpoint X.Y.Z`, `isPrerelease` true exactly when the version has a suffix, and two
+    assets: `counterpoint-X.Y.Z-x86_64.flatpak` and `counterpoint-X.Y.Z-1.x86_64.rpm`.
 11. The workflow publishes GitHub's generated notes, a list of pull request titles. Replace
     them with the approved notes, written to a temporary file outside the repository:
     `gh release edit vX.Y.Z --notes-file <notes-file>`.
@@ -148,7 +165,7 @@ The approval covers the release as prepared. Stop, report what happened, and pro
 these cases:
 
 - `origin/main` moved after the preparation: the version or notes may no longer fit.
-- A local check, CI or the dry run fails. `main` was green, so the failure is unexpected, and
+- CI or the dry run fails. `main` was green, so the failure is unexpected, and
   fixing it means changing more than the release. The one exception: when `gh run view <id>
   --log-failed` shows a network or download error, rerun the failed jobs once
   (`gh run rerun <id> --failed`) and stop only if they fail again.
@@ -205,7 +222,7 @@ A section with no bullets is left out.
 - Asking questions one at a time during the release instead of in the single round.
 - Committing the version bump directly to `main`.
 - Forgetting `Cargo.lock`: the tag check passes, but every build fails on `--locked`.
-- Tagging before the PR is merged, or tagging a local `main` that is behind `origin/main`.
+- Tagging before the PR is merged, or tagging anything but the fetched `origin/main`.
 - Pushing the tag before the user approved the release.
 - Changing `docs/prd.md` for the bump alone: a version bump is not a behaviour change.
 - Leaving GitHub's generated pull request list as the release notes.
