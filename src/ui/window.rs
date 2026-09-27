@@ -11,7 +11,7 @@ use crate::document;
 use crate::prompt::Mode;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
-use crate::ui::options_dialog::OptionsDialog;
+use crate::ui::preferences_dialog::PreferencesDialog;
 
 pub struct MainWindow {
     window: adw::ApplicationWindow,
@@ -189,11 +189,11 @@ impl MainWindow {
                 }
             ))
             .build();
-        let options = gio::ActionEntry::builder("options")
-            .activate(|window: &adw::ApplicationWindow, _, _| OptionsDialog::present(window))
+        let preferences = gio::ActionEntry::builder("preferences")
+            .activate(|window: &adw::ApplicationWindow, _, _| PreferencesDialog::present(window))
             .build();
         self.window
-            .add_action_entries([open, save, save_as, options]);
+            .add_action_entries([open, save, save_as, preferences]);
     }
 
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
@@ -353,14 +353,14 @@ fn primary_menu() -> gio::Menu {
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
     let tools = gio::Menu::new();
-    tools.append(Some("_Options…"), Some("win.options"));
+    tools.append(Some("_Preferences"), Some("win.preferences"));
     tools.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
-    let quit = gio::Menu::new();
-    quit.append(Some("_Quit"), Some("app.quit"));
+    let about = gio::Menu::new();
+    about.append(Some("_About Counterpoint"), Some("app.about"));
     let menu = gio::Menu::new();
     menu.append_section(None, &file);
     menu.append_section(None, &tools);
-    menu.append_section(None, &quit);
+    menu.append_section(None, &about);
     menu
 }
 

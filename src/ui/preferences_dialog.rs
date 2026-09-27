@@ -1,4 +1,4 @@
-//! The Options dialog: LLM endpoint settings and the endpoint's model list.
+//! The Preferences dialog: LLM endpoint settings and the endpoint's model list.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use crate::model_requests::{self, ModelRequests};
 
 const WORKER_FAILED: &str = "The request failed unexpectedly.";
 
-pub struct OptionsDialog {
+pub struct PreferencesDialog {
     dialog: adw::Dialog,
     base_url: adw::EntryRow,
     api_key: adw::PasswordEntryRow,
@@ -25,7 +25,7 @@ pub struct OptionsDialog {
     requests: RefCell<ModelRequests>,
 }
 
-impl OptionsDialog {
+impl PreferencesDialog {
     /// Shows the dialog over `parent` with the saved settings and a freshly loaded model list.
     pub fn present(parent: &impl IsA<gtk::Widget>) {
         let base_url = adw::EntryRow::builder()
@@ -128,7 +128,7 @@ impl OptionsDialog {
         toolbar.set_content(Some(&content));
 
         let dialog = adw::Dialog::builder()
-            .title("Options")
+            .title("Preferences")
             .content_width(560)
             .child(&toolbar)
             .build();

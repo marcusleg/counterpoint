@@ -99,7 +99,7 @@ impl Config {
 
     pub fn require_model(&self) -> Result<&str, String> {
         self.model.as_deref().ok_or_else(|| {
-            "No model configured. Choose one under Options… in the main menu.".to_string()
+            "No model configured. Choose one under Preferences in the main menu.".to_string()
         })
     }
 }
@@ -171,9 +171,9 @@ mod tests {
     }
 
     #[test]
-    fn require_model_points_to_the_options_dialog() {
+    fn require_model_points_to_the_preferences_dialog() {
         let error = Config::default().require_model().unwrap_err();
-        assert!(error.contains("Options… in the main menu"), "{error}");
+        assert!(error.contains("Preferences in the main menu"), "{error}");
     }
 
     #[test]

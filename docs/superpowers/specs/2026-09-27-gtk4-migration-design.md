@@ -32,7 +32,7 @@ each test on its own thread).
 
 | Module | Change |
 |---|---|
-| `config.rs` | `require_model` error now points to "Options… in the main menu" |
+| `config.rs` | `require_model` error now points to "Preferences in the main menu" |
 | `llm.rs`, `prompt.rs`, `proposal.rs` | unchanged |
 | `chat.rs` | `entries()` becomes public for all builds; `entries_json()` and its serialization test are removed, along with the `Serialize` derives that only served QML |
 | `document.rs` | adds `from_disk(text) -> (String, bool)`: replaces every `\r\n` with `\n` and reports whether any was found; adds `to_disk(text, crlf) -> String`: replaces any `\r\n` (e.g. pasted) with `\n`, then converts `\n` to `\r\n` if `crlf` |
@@ -48,7 +48,7 @@ each test on its own thread).
   guard, error alerts, and the glue between editor and chat.
 - `editor.rs`: `EditorView` wrapping `sourceview5::View` and `sourceview5::Buffer`.
 - `chat_pane.rs`: `ChatPane`. Selection chip, message list, proposal cards, input, busy state.
-- `options_dialog.rs`: `OptionsDialog`.
+- `preferences_dialog.rs`: `PreferencesDialog`.
 
 State shared between callbacks lives in `Rc<RefCell<…>>` (e.g. the `Conversation`, the
 `ModelRequests`, the current file path and CRLF flag). Borrows are never held across an `await`
@@ -81,24 +81,29 @@ Header bar:
 
 The window title is "• post.md — Counterpoint" (marker only while modified).
 
-Primary menu, three sections, accelerators shown next to each entry:
+Primary menu, three sections, accelerators shown next to each entry, following the GNOME HIG's
+standard primary-menu group (Preferences, Keyboard Shortcuts, Help, About; no Quit or Close in
+the primary menu):
 
 1. Open… · Save · Save As…
-2. Options… · Keyboard Shortcuts
-3. Quit
+2. Preferences · Keyboard Shortcuts
+3. About Counterpoint
 
 | Action | Accelerator |
 |---|---|
 | `win.open` | Ctrl+O |
 | `win.save` | Ctrl+S |
 | `win.save-as` | Ctrl+Shift+S |
-| `win.options` | Ctrl+, |
+| `win.preferences` | Ctrl+, |
 | `app.shortcuts` | Ctrl+? |
+| `app.about` | (none) |
 | `app.quit` | Ctrl+Q |
 
-Undo and redo are GtkSourceView's own (Ctrl+Z, Ctrl+Shift+Z). The Keyboard Shortcuts entry opens
-an `AdwShortcutsDialog` built in code listing the shortcuts above plus undo/redo and the chat
-input keys.
+`app.quit` has no menu entry but keeps its Ctrl+Q accelerator and still closes through the
+unsaved-changes guard; it is also listed in the Keyboard Shortcuts dialog. Undo and redo are
+GtkSourceView's own (Ctrl+Z, Ctrl+Shift+Z). The Keyboard Shortcuts entry opens an
+`AdwShortcutsDialog` built in code listing the shortcuts above plus undo/redo and the chat input
+keys.
 
 ## Editor
 
@@ -184,9 +189,9 @@ breaks, and horizontal rules. A link with any other destination renders its text
 `<a>` tag. Raw HTML, images (alt text), and anything else appear as escaped text. `&`, `<`, `>`,
 `'` and `"` are always escaped. Output always has balanced tags.
 
-## Options dialog
+## Preferences dialog
 
-`AdwDialog` titled "Options", about 560 px wide:
+`AdwDialog` titled "Preferences", about 560 px wide:
 
 - Header bar with Cancel (start) and Save (end, suggested). Save reads "Overwrite" when the
   settings file could not be read.
@@ -279,13 +284,13 @@ user's desktop without asking.
 
 ### Dev tooling
 
-`dev/mock_llm_server.py` stays; its docstring points to "Options… in the main menu".
+`dev/mock_llm_server.py` stays; its docstring points to "Preferences in the main menu".
 
 ## README
 
 Rewritten for GTK: intro; requirements (Rust 1.92+, GTK 4.18+, libadwaita 1.8+, GtkSourceView
 5.12+, Fedora: `sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel`); configuration
-(menu path "Options…"); build and run; mock server; keyboard table (adds Ctrl+, and Ctrl+?, and
+(menu path "Preferences"); build and run; mock server; keyboard table (adds Ctrl+, and Ctrl+?, and
 Ctrl+Enter in the chat); development checks (integration test, `dev/headless.sh`,
 `COUNTERPOINT_ROUNDTRIP_FILES`); known limitations. All Qt notes, including
 `QT_QPA_PLATFORMTHEME`, are removed.

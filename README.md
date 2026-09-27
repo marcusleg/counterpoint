@@ -23,7 +23,7 @@ Highlight text, then chat with an LLM about it in one of two modes:
 
 ## Configuration
 
-Open **Options…** in the main menu (☰) to connect to an OpenAI-compatible endpoint:
+Open **Preferences** in the main menu (☰) to connect to an OpenAI-compatible endpoint:
 
 - **Base URL**, for example `http://localhost:11434/v1` for Ollama (the default).
 - **API key**, optional; sent as a bearer token.
@@ -40,7 +40,7 @@ cargo run --release
 ```
 
 To try the editor without a real model, start the mock server in another terminal, run the
-editor, and in **Options…** set the base URL to `http://127.0.0.1:8765/v1` and pick the model
+editor, and in **Preferences** set the base URL to `http://127.0.0.1:8765/v1` and pick the model
 `mock`:
 
 ```sh
@@ -55,7 +55,7 @@ cargo run
 | Ctrl+O            | Open                                     |
 | Ctrl+S            | Save                                     |
 | Ctrl+Shift+S      | Save As                                  |
-| Ctrl+,            | Options                                  |
+| Ctrl+,            | Preferences                              |
 | Ctrl+?            | Keyboard shortcuts                       |
 | Ctrl+Q            | Quit                                     |
 | Ctrl+Z            | Undo (an applied proposal is one step)   |
