@@ -12,7 +12,7 @@ all of it. The substance is the user's: the decision, the reasons, the alternati
 the costs accepted. The prose is the agent's: clear and complete sentences, however terse the
 user was. The codebase shows what was built, never why, and supplies nothing for the record.
 
-Chat carries the path, a concise statement of what was written or changed, and whatever
+Chat carries the file name, a concise statement of what was written or changed, and whatever
 needs the user's attention, not the record itself. An inferred sentence is named in a few
 words, not quoted.
 
@@ -28,7 +28,8 @@ words, not quoted.
    sentence that only follows from what they said starts with `[inferred]` so they can
    strike it. A part the user has not supplied is a one-line placeholder in brackets, not a
    guess, also when the user asked for a finished record and is away.
-3. **Report in a few lines:** the path, what the record says in a sentence, the
+3. **Report in a few lines:** the file as `docs/adr/NNNN-short-title.md`, what the record
+   says in a sentence, the
    placeholders, the inferred sentences, and any question the draft raised. Put all
    questions in one message. After a change, say what changed and why.
 4. **Finish on the user's word.** Their edits stand. Their answers replace the placeholders.
