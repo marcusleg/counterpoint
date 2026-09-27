@@ -31,7 +31,13 @@ what prompted it now.
 
 ## Alternatives considered
 
-### Alternative
+<!-- One `###` subsection per alternative, including "do nothing" when it was a real option. -->
+
+### First alternative
+
+What it would have looked like and why it was not chosen.
+
+### Second alternative
 
 What it would have looked like and why it was not chosen.
 
