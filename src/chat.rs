@@ -1,21 +1,17 @@
 //! Conversation state behind the chat pane: displayed entries, LLM history and request lifecycle.
 
-use serde::Serialize;
-
 use crate::llm::ChatMessage;
 use crate::prompt::Mode;
 use crate::proposal::{self, Edit};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProposalState {
     Pending,
     Applied,
     Rejected,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     User {
         text: String,
@@ -51,7 +47,6 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    #[cfg(test)]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -145,10 +140,6 @@ impl Conversation {
             }
             _ => false,
         }
-    }
-
-    pub fn entries_json(&self) -> String {
-        serde_json::to_string(&self.entries).expect("chat entries always serialize")
     }
 }
 
@@ -373,18 +364,5 @@ mod tests {
         let mut conversation = conversation_with_reply(Mode::Sparring, "Answer");
         assert!(conversation.apply_proposal(0, "x").is_err());
         assert!(conversation.apply_proposal(99, "x").is_err());
-    }
-
-    #[test]
-    fn entries_serialize_for_qml() {
-        let conversation = conversation_with_reply(Mode::Ghostwriting, GHOST_REPLY);
-        let json: serde_json::Value = serde_json::from_str(&conversation.entries_json()).unwrap();
-        assert_eq!(json[0]["kind"], "user");
-        assert_eq!(json[0]["text"], "Please help");
-        assert_eq!(json[1]["kind"], "proposal");
-        assert_eq!(json[1]["explanation"], "Shorter.");
-        assert_eq!(json[1]["edits"][0]["original"], "Old text.");
-        assert_eq!(json[1]["edits"][0]["replacement"], "New text.");
-        assert_eq!(json[1]["state"], "pending");
     }
 }
