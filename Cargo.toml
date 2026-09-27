@@ -23,3 +23,7 @@ tempfile = "3"
 [[test]]
 name = "gtk_editor"
 harness = false
+
+[[test]]
+name = "gtk_window"
+harness = false

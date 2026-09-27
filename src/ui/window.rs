@@ -17,6 +17,8 @@ pub struct MainWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
     editor: EditorView,
+    /// Owned here: the pane's own signal handlers only hold weak references.
+    chat: Rc<ChatPane>,
     /// The open file, or `None` for a new document.
     path: RefCell<Option<PathBuf>>,
     /// True if the open file uses CRLF line endings, so saving restores them.
@@ -104,6 +106,7 @@ impl MainWindow {
             window,
             title,
             editor,
+            chat,
             path: RefCell::new(None),
             crlf: Cell::new(false),
             close_confirmed: Cell::new(false),
@@ -112,6 +115,11 @@ impl MainWindow {
         this.update_title();
         this.follow_dark_mode();
         this.add_actions();
+        // Explicit rather than relying on both defaults happening to agree.
+        this.chat.set_mode(match mode.active_name().as_deref() {
+            Some("ghostwriting") => Mode::Ghostwriting,
+            _ => Mode::Sparring,
+        });
 
         this.editor.buffer().connect_modified_changed(glib::clone!(
             #[weak]
