@@ -3,7 +3,7 @@
 |        |                                                            |
 | ------ | ---------------------------------------------------------- |
 | Status | draft \| accepted \| rejected \| superseded by ADR-XXXX    |
-| Date   | YYYY-MM-DD of the decision; leave empty while a draft      |
+| Date   | YYYY-MM-DD the user decided; empty until they name it      |
 
 One or two sentences: what kind of decision this is and the situation that called for it.
 
