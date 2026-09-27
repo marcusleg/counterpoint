@@ -96,12 +96,18 @@ ones match. After a visible change to the window, regenerate the screenshots wit
 
 ## Releases
 
-To release, set the new version in `Cargo.toml`, commit, and push a matching tag:
+Versions follow [Semantic Versioning](https://semver.org). To release, bump the version in a
+pull request (`Cargo.toml`, `Cargo.lock`, and a `<release>` entry in the AppStream metainfo),
+merge it, and push a matching tag from `main`:
 
 ```sh
-git tag v0.1.0
+git tag -a v0.1.0 -m "Counterpoint 0.1.0"
 git push origin v0.1.0
 ```
+
+The agent skill in `.agents/skills/release/` (linked into `.claude/skills/` for Claude Code)
+walks through the whole process, including choosing the version and checking the build
+containers.
 
 `.github/workflows/release.yml` then builds the Flatpak bundle (from
 `build-aux/de.marcusleg.Counterpoint.yml`, in Flathub's GNOME 51 build container) and the RPM
