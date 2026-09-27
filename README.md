@@ -8,6 +8,13 @@ code, links, front matter and HTML comments are highlighted. Files are saved exa
 them, so opening and saving a file without changes leaves it byte-for-byte identical. The window
 follows GNOME's light or dark style.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark.png">
+  <img src="docs/screenshots/light.png" alt="Counterpoint with a blog post open and one paragraph
+  selected. The chat pane shows a sparring reply that critiques the paragraph, and a
+  ghostwriting proposal that shortens it to one sentence, with Apply and Reject buttons.">
+</picture>
+
 Highlight text, then chat with an LLM about it in one of two modes:
 
 - **Sparring:** the LLM reads the document and critiques it. It cannot change the document.
@@ -127,6 +134,12 @@ needs `XDG_RUNTIME_DIR` and `git`, and makes GLib criticals fatal so the tests c
 
 Without a display the GTK tests print `SKIPPED: no display`. The same checks run in GitHub
 Actions (`.github/workflows/ci.yml`) in a Fedora container.
+
+The screenshots above are rendered by `dev/screenshot.sh`, in GNOME's light and dark style, into
+`docs/screenshots/`. Run it again after a visible change to the window. It builds
+`examples/screenshot.rs`, which opens a sample post and holds a sparring and a ghostwriting
+exchange with a canned endpoint, and runs it in a private headless `mutter` (Fedora package
+`mutter`) on a private session bus, since Broadway draws nothing while no browser is attached.
 
 To check that your own files round-trip unchanged without adding them to the repository, list
 them, separated by colons, in `COUNTERPOINT_ROUNDTRIP_FILES`:

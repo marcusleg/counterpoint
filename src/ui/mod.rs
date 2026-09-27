@@ -90,7 +90,8 @@ fn main_window(app: &adw::Application) -> gtk::Window {
     }
 }
 
-fn load_style() {
+/// Adds the application's stylesheet to the default display. Needs an initialised display.
+pub fn load_style() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(STYLE);
     if let Some(display) = gdk::Display::default() {
