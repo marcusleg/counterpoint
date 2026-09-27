@@ -328,7 +328,7 @@ mod tests {
 
         let error = complete(&config, &[ChatMessage::user("hi")]).unwrap_err();
         assert!(matches!(error, LlmError::Config(_)), "{error:?}");
-        assert!(error.to_string().contains("Tools > Options"));
+        assert!(error.to_string().contains("Options… in the main menu"));
         mock.assert();
     }
 
