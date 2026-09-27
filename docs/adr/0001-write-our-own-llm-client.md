@@ -1,9 +1,9 @@
 # ADR-0001: Write our own small LLM client
 
-|        |          |
-| ------ | -------- |
-| Status | accepted |
-| Date   |          |
+|        |            |
+| ------ | ---------- |
+| Status | accepted   |
+| Date   | 2026-09-27 |
 
 This decision is about how Counterpoint talks to the LLM endpoint. A review of the current
 client, with reply streaming planned for the future, raised the question of whether to adopt a

@@ -23,9 +23,9 @@ words, not quoted.
    the same way: ask the user, do not reconstruct it from code or git history.
 2. **Write the draft** to `docs/adr/NNNN-short-title.md` from [template.md](template.md).
    `NNNN` is the next unused four-digit number. The title states the decision ("Use
-   GtkSourceView for the editor"). Status is `draft`; the date is the one the user named
-   for the decision, or empty. Each claim traces back to something the user said. A
-   sentence that only follows from what they said starts with `[inferred]` so they can
+   GtkSourceView for the editor"). Status is `draft`; the date is today, unless the user
+   named another day for the decision. Each claim traces back to something the user said.
+   A sentence that only follows from what they said starts with `[inferred]` so they can
    strike it. A part the user has not supplied is a one-line placeholder in brackets, not a
    guess, also when the user asked for a finished record and is away.
 3. **Report in a few lines:** the file as `docs/adr/NNNN-short-title.md`, what the record
@@ -33,8 +33,8 @@ words, not quoted.
    raised. Put all questions in one message. After a change, say what changed and why.
 4. **Finish on the user's word.** Their edits stand. Their answers replace the placeholders.
    When they say the record or a change to it stands, remove the remaining `[inferred]`
-   markers; when they say the decision is accepted or rejected, set the status and the date
-   they name. The ADR goes in the same pull request as
+   markers; when they say the decision is accepted or rejected, set the status, and the
+   date to that day unless they name another. The ADR goes in the same pull request as
    the change it belongs to, or in its own when it records a decision made earlier.
 
 ## Shape
@@ -57,7 +57,7 @@ and numbers read from the code stay in the code.
 
 - `draft` until the user has reviewed the file and said the decision stands.
 - `accepted` or `rejected` once they have.
-- The date is the day the user decided, as they named it. It stays empty until they do.
+- The date is the day the user decided: today, unless they name another day.
 - `superseded by ADR-NNNN` when a later ADR replaces it.
 
 ## Amending and superseding
@@ -73,4 +73,3 @@ and numbers read from the code stay in the code.
 - Listing alternatives the user never considered, to make the record look thorough.
 - Pasting the ADR into chat, in full or in part, instead of pointing at the file.
 - Recording implementation detail the user would skim past.
-- Marking a decision `accepted` on a date the user did not name.
