@@ -8,6 +8,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::document;
+use crate::state::State;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
 use crate::ui::preferences_dialog::PreferencesDialog;
@@ -133,7 +134,11 @@ impl MainWindow {
         this.update_title();
         this.follow_dark_mode();
         this.add_actions();
-        this.apply_zoom(Zoom::default());
+        let initial_zoom = State::load()
+            .zoom
+            .map(Zoom::from_percent)
+            .unwrap_or_default();
+        this.apply_zoom(initial_zoom);
 
         this.editor.buffer().connect_modified_changed(glib::clone!(
             #[weak]
@@ -194,7 +199,9 @@ impl MainWindow {
                 #[weak(rename_to = this)]
                 self,
                 move |_: &adw::ApplicationWindow, _, _| {
-                    this.apply_zoom(this.zoom.get().zoom_in());
+                    let zoom = this.zoom.get().zoom_in();
+                    this.apply_zoom(zoom);
+                    this.remember_zoom(zoom);
                 }
             ))
             .build();
@@ -203,7 +210,9 @@ impl MainWindow {
                 #[weak(rename_to = this)]
                 self,
                 move |_: &adw::ApplicationWindow, _, _| {
-                    this.apply_zoom(this.zoom.get().zoom_out());
+                    let zoom = this.zoom.get().zoom_out();
+                    this.apply_zoom(zoom);
+                    this.remember_zoom(zoom);
                 }
             ))
             .build();
@@ -212,7 +221,9 @@ impl MainWindow {
                 #[weak(rename_to = this)]
                 self,
                 move |_: &adw::ApplicationWindow, _, _| {
-                    this.apply_zoom(Zoom::reset());
+                    let zoom = Zoom::reset();
+                    this.apply_zoom(zoom);
+                    this.remember_zoom(zoom);
                 }
             ))
             .build();
@@ -244,6 +255,25 @@ impl MainWindow {
         {
             action.set_enabled(enabled);
         }
+    }
+
+    /// Persists the zoom level for the next restart. Saving the state is a convenience, so a
+    /// failure here must not interrupt the user.
+    fn remember_zoom(&self, zoom: Zoom) {
+        let mut state = State::load();
+        state.zoom = Some(zoom.percent());
+        let _ = state.save();
+    }
+
+    /// Persists `path`'s folder as the most recently used one, so **Open…** starts there next
+    /// time. Saving the state is a convenience, so a failure here must not interrupt the user.
+    fn remember_folder(&self, path: &Path) {
+        let Some(folder) = path.parent() else {
+            return;
+        };
+        let mut state = State::load();
+        state.last_folder = Some(folder.to_path_buf());
+        let _ = state.save();
     }
 
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
@@ -296,6 +326,9 @@ impl MainWindow {
             return;
         }
         let dialog = file_dialog("Open Markdown File");
+        if let Some(folder) = State::load().remembered_folder() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+        }
         let Ok(file) = dialog.open_future(Some(&self.window)).await else {
             return;
         };
@@ -307,6 +340,7 @@ impl MainWindow {
                 let (text, crlf) = document::from_disk(&contents);
                 self.crlf.set(crlf);
                 self.editor.load(&text);
+                self.remember_folder(&path);
                 self.set_path(path);
             }
             Err(message) => self.show_error(&message),
@@ -326,7 +360,12 @@ impl MainWindow {
         let dialog = file_dialog("Save Markdown File");
         match self.path.borrow().as_ref() {
             Some(path) => dialog.set_initial_file(Some(&gio::File::for_path(path))),
-            None => dialog.set_initial_name(Some("Untitled.md")),
+            None => {
+                dialog.set_initial_name(Some("Untitled.md"));
+                if let Some(folder) = State::load().remembered_folder() {
+                    dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+                }
+            }
         }
         let Ok(file) = dialog.save_future(Some(&self.window)).await else {
             return false;
@@ -342,6 +381,7 @@ impl MainWindow {
         match document::write_file(&path, &contents) {
             Ok(()) => {
                 self.editor.buffer().set_modified(false);
+                self.remember_folder(&path);
                 self.set_path(path);
                 true
             }

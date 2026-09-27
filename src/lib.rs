@@ -6,6 +6,7 @@ pub mod llm;
 pub mod model_requests;
 pub mod prompt;
 pub mod proposal;
+pub mod state;
 pub mod text_diff;
 pub mod ui;
 pub mod zoom;

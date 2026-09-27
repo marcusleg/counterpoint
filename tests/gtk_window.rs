@@ -1,8 +1,8 @@
 //! GTK checks for the main window built through the public API: the chat input enabling Send,
-//! the mode toggle, the selection chip and the editor placeholder. GTK must run on
-//! the thread that initialised it and only one `gtk::Application` may run per process, so this
-//! test builds the real window inside `connect_activate`, drives it with
-//! `glib::idle_add_local_once` once it is realized, and quits the application afterwards.
+//! the mode toggle, the selection chip, the editor placeholder, the primary menu and the zoom
+//! controls. GTK must run on the thread that initialised it and only one `gtk::Application` may
+//! run per process, so this test builds the real window inside `connect_activate`, drives it
+//! with `glib::idle_add_local_once` once it is realized, and quits the application afterwards.
 //! It needs a display; `dev/headless.sh cargo test` provides a private one and sets
 //! `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead of skipping silently.
 
@@ -13,6 +13,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use counterpoint::state::{self, State};
 use counterpoint::ui::window::MainWindow;
 
 const NO_SELECTION: &str = "No selection — whole document";
@@ -36,6 +37,14 @@ impl Checks {
 }
 
 fn main() -> ExitCode {
+    // Safe: the process is still single-threaded here, before `gtk::init()` below can start any
+    // GTK-owned threads. A fresh temp directory keeps this test from ever touching the user's
+    // real state file; it stays alive for the whole test (dropped, and cleaned up, on return).
+    let state_dir = tempfile::tempdir().expect("temp dir for XDG_STATE_HOME");
+    unsafe {
+        std::env::set_var("XDG_STATE_HOME", state_dir.path());
+    }
+
     if gtk::init().is_err() {
         if std::env::var_os("COUNTERPOINT_REQUIRE_DISPLAY").is_some() {
             println!("FAIL: no display although COUNTERPOINT_REQUIRE_DISPLAY is set");
@@ -292,4 +301,40 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         zoom_out_action.is_enabled(),
         "zoom-out re-enables once away from the minimum",
     );
+
+    window
+        .activate_action("win.zoom-in", None)
+        .expect("win.zoom-in exists");
+    checks.check(
+        zoom_label.label().as_deref() == Some("110%"),
+        "zoom-in increases to 110% again",
+    );
+    let state_path = state::state_path().expect("state path resolves under XDG_STATE_HOME");
+    checks.check(
+        State::load_from(&state_path).zoom == Some(110),
+        "the zoom level is persisted to the state file",
+    );
+
+    let second = MainWindow::new(app);
+    let second_window = app
+        .windows()
+        .into_iter()
+        .find(|w| *w != window)
+        .expect("a second window was created");
+    let mut second_widgets = Vec::new();
+    collect_widgets(
+        &second_window.clone().upcast::<gtk::Widget>(),
+        &mut second_widgets,
+    );
+    let second_zoom_label = second_widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::Button>())
+        .find(|b| b.label().as_deref().is_some_and(|l| l.ends_with('%')))
+        .expect("second window's zoom label button");
+    checks.check(
+        second_zoom_label.label().as_deref() == Some("110%"),
+        "a new window starts at the persisted zoom level",
+    );
+    drop(second);
+    second_window.destroy();
 }

@@ -33,6 +33,9 @@ Open **Preferences** in the main menu (☰) to connect to an OpenAI-compatible e
 Settings are stored in `~/.config/counterpoint/settings.json` (or under `$XDG_CONFIG_HOME`),
 readable only by you. Changes apply to the next chat message.
 
+The folder of the last file you opened or saved and the editor zoom level are remembered in
+`~/.local/state/counterpoint/state.json` (or under `$XDG_STATE_HOME`).
+
 ## Build and run
 
 ```sh
