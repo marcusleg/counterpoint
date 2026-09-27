@@ -178,9 +178,11 @@ and `render()`.
 `chat_markup::to_pango` handles paragraphs, headings (bold, larger for levels 1–3), emphasis
 (`<i>`), strong (`<b>`), strikethrough (`<s>`), inline code and fenced/indented code blocks
 (`<tt>`), bullet and ordered lists (with "• " / "n. " prefixes and indentation for nesting),
-block quotes (indented, dimmed), links (`<a href="…">`, URL escaped), hard and soft breaks, and
-horizontal rules. Raw HTML, images (alt text), and anything else appear as escaped text. `&`,
-`<`, `>`, `'` and `"` are always escaped. Output always has balanced tags.
+block quotes (indented, dimmed), links whose destination starts with `http://`, `https://` or
+`mailto:` (case-insensitive, ASCII) as `<a href="…">` with the URL escaped, hard and soft
+breaks, and horizontal rules. A link with any other destination renders its text only, with no
+`<a>` tag. Raw HTML, images (alt text), and anything else appear as escaped text. `&`, `<`, `>`,
+`'` and `"` are always escaped. Output always has balanced tags.
 
 ## Options dialog
 
@@ -250,18 +252,30 @@ One `main` runs every check in turn on the main thread:
 - After `load`: `can_undo()` is false and the buffer is not modified.
 - Apply: after `apply_markdown`, one undo restores the exact old text and one redo the new text;
   a mark outside the changed span keeps its offset.
-- Every `chat_markup` output in a set of sample inputs parses with `pango::parse_markup`.
+- Every `chat_markup` output in a set of sample inputs is accepted by `GtkLabel::set_markup`
+  (Pango's own parser rejects GtkLabel's `<a>` links, so the check uses a label).
 - If GTK cannot initialise (no display), the test prints `SKIPPED: no display` and exits
-  successfully.
+  successfully, unless `COUNTERPOINT_REQUIRE_DISPLAY` is set, in which case it fails instead.
+
+`tests/gtk_window.rs` (also `harness = false`) checks window-level behaviour built through the
+public API: `MainWindow::new` is presented inside a real `adw::Application`, and the checks run
+once the window is realized, walking the widget tree to confirm the chat input enables Send, the
+mode toggle switches the chat's placeholder hint, the selection chip reflects the editor's
+selection, and the editor placeholder shows and hides with the editor's text.
 
 ### Headless runs
 
-`dev/headless.sh <command…>` starts `gtk4-broadwayd --address 127.0.0.1 :5` in the background
-(its web viewer bound to loopback only), waits for its socket (`broadway6.socket` in
-`$XDG_RUNTIME_DIR` for display `:5`), runs the command with
-`GDK_BACKEND=broadway BROADWAY_DISPLAY=:5`, and stops the daemon afterwards. Used for `cargo test`
-and for a launch smoke test (start the binary, check stderr for GTK criticals or warnings, stop it
-after a few seconds). No windows are opened on the user's desktop without asking.
+`dev/headless.sh <command…>` removes a stale `broadway6.socket` (in `$XDG_RUNTIME_DIR`, for the
+default display `:5`) before starting, so a socket left by a killed daemon cannot make the wait
+loop pass instantly, then starts `gtk4-broadwayd --address 127.0.0.1 :5` in the background (its
+web viewer bound to loopback only, its output captured to a temp log shown on failure), waits for
+its socket while checking the daemon is still running, and runs the command with
+`COUNTERPOINT_REQUIRE_DISPLAY=1 GDK_BACKEND=broadway BROADWAY_DISPLAY=:5` through
+`dbus-run-session` so it gets its own private D-Bus session bus and can never forward to, or be
+activated by, a Counterpoint instance on the user's own session. The daemon and its socket and log
+are removed afterwards. Used for `cargo test` and for a launch smoke test (start the binary, check
+stderr for GTK criticals or warnings, stop it after a few seconds). No windows are opened on the
+user's desktop without asking.
 
 ### Dev tooling
 

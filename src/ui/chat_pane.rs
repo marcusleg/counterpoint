@@ -420,7 +420,7 @@ impl ChatPane {
 
     fn update_selection(&self) {
         let selection = self.editor.selection_text();
-        let text = if selection.is_empty() {
+        let text = if selection.trim().is_empty() {
             NO_SELECTION.to_string()
         } else {
             let collapsed: Vec<&str> = selection.split_whitespace().collect();

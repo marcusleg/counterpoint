@@ -98,6 +98,10 @@ bytes.
 - An applied proposal stays marked as applied after you undo it in the editor, and cannot be
   applied again; ask for a new proposal instead.
 - Chat replies render a subset of Markdown (no tables or images).
+- In the chat input, Enter sends even while an input method is composing text; commit the
+  composition first (for example with Space) before pressing Enter.
+- Save As does not add a `.md` extension automatically; the suggested name `Untitled.md` has
+  one.
 
 ## License
 
