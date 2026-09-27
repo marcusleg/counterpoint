@@ -714,7 +714,7 @@ fn recent_files(
     let recent_names = || -> Vec<String> {
         menu_entries(&recent_submenu(root))
             .into_iter()
-            .map(|(label, _, _)| label.split(" — ").next().unwrap_or_default().to_string())
+            .map(|(label, _, _)| label)
             .collect()
     };
     let crlf = work_dir.join("crlf.md");
@@ -723,16 +723,7 @@ fn recent_files(
 
     checks.check(
         recent_names() == ["crlf.md"],
-        "a file opened earlier is listed under Open Recent",
-    );
-    // A long temp folder is shortened in the middle, but keeps its end.
-    checks.check(
-        menu_entries(&recent_submenu(root))
-            .first()
-            .is_some_and(|(label, _, _)| {
-                label.starts_with("crlf.md — ") && label.ends_with("/work")
-            }),
-        "an Open Recent entry shows the file name and its folder",
+        "a file opened earlier is listed under Open Recent, by its name",
     );
 
     main.load_path(&other).expect("the second file opens");
@@ -785,9 +776,32 @@ fn recent_files(
     );
     let state_path = state::state_path().unwrap();
     checks.check(
-        State::load_from(&state_path).recent_files == [crlf],
+        State::load_from(&state_path).recent_files == [crlf.clone()],
         "the recent files are persisted to the state file",
     );
+
+    // Once the last recent file cannot be opened either, the list is empty again.
+    let moved = work_dir.join("crlf.md.moved");
+    fs::rename(&crlf, &moved).unwrap();
+    activate_recent(window, root, "crlf.md");
+    if pump_until(
+        checks,
+        "opening the last, missing recent file shows an alert",
+        DIALOG_TIMEOUT,
+        || find_alert(root).is_some(),
+    ) {
+        find_button(&find_alert(root).unwrap(), "_OK")
+            .unwrap()
+            .emit_clicked();
+        pump_until(checks, "OK closes the alert", DIALOG_TIMEOUT, || {
+            find_alert(root).is_none()
+        });
+    }
+    checks.check(
+        recent_submenu(root).n_items() == 0,
+        "Open Recent keeps its submenu, now empty, once the last file is dropped",
+    );
+    fs::rename(&moved, &crlf).unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]

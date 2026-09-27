@@ -44,10 +44,10 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R6. Zoom the editor text in, out and back to default; remember the zoom level.
 - R7. Follow GNOME's light or dark style.
 - R30. **Open Recent** in the main menu lists the ten files most recently opened or saved,
-  newest first, each with its folder, long names and folders shortened in the middle. Choosing
-  one opens it through the unsaved-changes check; a file that can no longer be read is reported
-  and dropped from the list. The item is always shown, with an empty list when there are no
-  recent files.
+  newest first, by file name, adding the folder when two share a name; long names and folders
+  are shortened so the menu stays narrow. Choosing one opens it through the unsaved-changes
+  check; a file that can no longer be read is reported and dropped from the list. The item is
+  always shown, with an empty list when there are no recent files.
 
 ### Chat
 
