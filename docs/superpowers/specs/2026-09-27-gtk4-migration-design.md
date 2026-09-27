@@ -114,7 +114,8 @@ The zoom controls scale the editor's text only, in steps of 10 percentage points
 300%; the zoom-in and zoom-out buttons (and their actions) disable themselves at the bounds. The
 level is applied through a `GtkCssProvider` scoped to the editor view's own `counterpoint-editor`
 style class (`font-size: <percent>%`), registered on the display once per `EditorView` and
-reloaded on every zoom change.
+reloaded on every zoom change. The level persists in the state file (`state.rs`) and is restored,
+rounded to the nearest step, when the window is created.
 
 ## Editor
 
@@ -133,13 +134,18 @@ reloaded on every zoom change.
 
 ## File handling
 
-- Open: `GtkFileDialog` with filters "Markdown files" (`*.md`, `*.markdown`) and "All files".
-  Reads with `document::read_file`, then `document::from_disk`; stores the path and CRLF flag,
-  then `EditorView::load`.
+- Open: `GtkFileDialog` with filters "Markdown files" (`*.md`, `*.markdown`) and "All files"; its
+  initial folder is `State::load().remembered_folder()` (the last file's folder, if it still
+  exists as a directory). Reads with `document::read_file`, then `document::from_disk`; stores
+  the path and CRLF flag, then `EditorView::load`, then remembers the file's folder.
 - Save: without a path, runs Save As. Otherwise `document::to_disk(text, crlf)` →
-  `document::write_file` → `set_modified(false)`.
-- Save As: `GtkFileDialog::save` with the same filters and initial name "Untitled.md"; on success
-  the path and title update. A new document keeps LF.
+  `document::write_file` → `set_modified(false)` → remembers the file's folder.
+- Save As: `GtkFileDialog::save` with the same filters and initial name "Untitled.md"; for an
+  untitled document, its initial folder is the same remembered folder as Open. On success the
+  path and title update, and the folder is remembered. A new document keeps LF.
+- Remembering a folder loads the state file, sets `last_folder` to the saved file's parent, and
+  saves it back (`MainWindow::remember_folder`); a failure to save is ignored, since the state is
+  a convenience and must never interrupt the user.
 - Unsaved-changes guard: Open, the window's `close-request` and Quit share one helper,
   `confirm_discard(then)`. When the buffer is modified it shows an `AdwAlertDialog` ("Save
   changes?") with responses Cancel (close response, so Escape cancels), Discard (destructive) and Save
