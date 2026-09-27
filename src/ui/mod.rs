@@ -24,6 +24,7 @@ label.edit-replacement { background-color: alpha(var(--success-bg-color), 0.15);
 /// (action, accelerators, label) for every application shortcut. An action may have several
 /// accelerators; the first is its primary one, shown in the Keyboard Shortcuts dialog.
 const SHORTCUTS: &[(&str, &[&str], &str)] = &[
+    ("win.new", &["<Control>n"], "New"),
     ("win.open", &["<Control>o"], "Open"),
     ("win.save", &["<Control>s"], "Save"),
     ("win.save-as", &["<Control><Shift>s"], "Save As"),

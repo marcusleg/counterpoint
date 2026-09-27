@@ -160,6 +160,15 @@ impl MainWindow {
     }
 
     fn add_actions(self: &Rc<Self>) {
+        let new = gio::ActionEntry::builder("new")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| {
+                    glib::spawn_future_local(async move { this.new_document().await });
+                }
+            ))
+            .build();
         let open = gio::ActionEntry::builder("open")
             .activate(glib::clone!(
                 #[weak(rename_to = this)]
@@ -228,6 +237,7 @@ impl MainWindow {
             ))
             .build();
         self.window.add_action_entries([
+            new,
             open,
             save,
             save_as,
@@ -319,6 +329,24 @@ impl MainWindow {
         };
         self.confirm_pending.set(false);
         proceed
+    }
+
+    /// Starts a new, untitled document, once the unsaved-changes guard allows it. The chat
+    /// conversation, the remembered folder and the zoom level are untouched.
+    async fn new_document(self: &Rc<Self>) {
+        if !self.confirm_discard().await {
+            return;
+        }
+        self.reset_document();
+    }
+
+    /// Clears the document to a fresh, untitled state: nothing to undo, unmodified, no open
+    /// path, LF line endings, and the title back to "Untitled".
+    fn reset_document(&self) {
+        self.editor.load("");
+        *self.path.borrow_mut() = None;
+        self.crlf.set(false);
+        self.update_title();
     }
 
     async fn open(self: &Rc<Self>) {
@@ -439,6 +467,7 @@ impl MainWindow {
 
 fn primary_menu() -> gio::Menu {
     let file = gio::Menu::new();
+    file.append(Some("_New"), Some("win.new"));
     file.append(Some("_Open…"), Some("win.open"));
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));

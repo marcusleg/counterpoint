@@ -55,6 +55,7 @@ cargo run
 
 | Keys              | Action                                   |
 |-------------------|------------------------------------------|
+| Ctrl+N            | New document                             |
 | Ctrl+O            | Open                                     |
 | Ctrl+S            | Save                                     |
 | Ctrl+Shift+S      | Save As                                  |
