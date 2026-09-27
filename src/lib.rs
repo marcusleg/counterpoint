@@ -9,4 +9,5 @@ pub mod proposal;
 pub mod state;
 pub mod text_diff;
 pub mod ui;
+pub mod xdg;
 pub mod zoom;

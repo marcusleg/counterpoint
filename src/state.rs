@@ -3,11 +3,14 @@
 //! since it is a convenience rather than user configuration: a missing or broken state file
 //! must never block the app.
 
+use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::xdg;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -36,32 +39,37 @@ impl State {
         self.save_to(&state_path()?)
     }
 
-    /// Writes the state atomically; a leftover temp file from a previous crash is replaced.
+    /// Writes the state atomically, readable only by the owner since it names the user's
+    /// folders; a leftover temp file from a previous crash is replaced.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
         let error =
-            |e: std::io::Error| format!("Could not save the state to {}: {e}", path.display());
+            |e: &dyn fmt::Display| format!("Could not save the state to {}: {e}", path.display());
         if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(error)?;
+            fs::create_dir_all(dir).map_err(|e| error(&e))?;
         }
-        let mut json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Could not save the state to {}: {e}", path.display()))?;
+        let mut json = serde_json::to_string_pretty(self).map_err(|e| error(&e))?;
         json.push('\n');
 
         let temp_path = path.with_extension("json.tmp");
         let _ = fs::remove_file(&temp_path);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
         // No `sync_all` before the rename: this is a convenience file rewritten on every zoom
         // step on the main thread, and the temp-file-then-rename already prevents a truncated
         // file from ever replacing it.
-        let result = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let result = options
             .open(&temp_path)
             .and_then(|mut file| file.write_all(json.as_bytes()))
             .and_then(|()| fs::rename(&temp_path, path));
         if result.is_err() {
             let _ = fs::remove_file(&temp_path);
         }
-        result.map_err(error)
+        result.map_err(|e| error(&e))
     }
 
     /// `last_folder`, but only if it still exists as a directory.
@@ -73,36 +81,17 @@ impl State {
 /// The state file: `$XDG_STATE_HOME/counterpoint/state.json`, or
 /// `~/.local/state/counterpoint/state.json`.
 pub fn state_path() -> Result<PathBuf, String> {
-    state_path_from(|name| std::env::var(name).ok())
+    xdg::user_file_from_env("XDG_STATE_HOME", &[".local", "state"], "state.json")
 }
 
 pub fn state_path_from(lookup: impl Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
-    let state_home = lookup("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            lookup("HOME")
-                .filter(|home| !home.is_empty())
-                .map(|home| PathBuf::from(home).join(".local").join("state"))
-        })
-        .ok_or_else(|| {
-            "Cannot locate the state file: neither XDG_STATE_HOME nor HOME is set.".to_string()
-        })?;
-    Ok(state_home.join("counterpoint").join("state.json"))
+    xdg::user_file(lookup, "XDG_STATE_HOME", &[".local", "state"], "state.json")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
-    fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = vars
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |name| map.get(name).cloned()
-    }
+    use crate::xdg::lookup;
 
     #[test]
     fn state_path_prefers_xdg_state_home() {
@@ -188,6 +177,17 @@ mod tests {
         };
         assert!(state.save_to(&path).is_err());
         assert!(!path.exists(), "a failed save must write nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_file_is_readable_only_by_the_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        State::default().save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

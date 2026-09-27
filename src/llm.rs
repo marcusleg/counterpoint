@@ -1,15 +1,24 @@
 //! Minimal blocking client for OpenAI-compatible `/chat/completions` endpoints.
 
 use std::fmt;
+use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const BODY_EXCERPT_CHARS: usize = 500;
+/// How long a chat completion may take in total. A local model rewriting a long document can
+/// easily need minutes, so this is generous; the connect timeout below catches unreachable
+/// endpoints quickly.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const LIST_MODELS_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The largest response body read from the endpoint; anything longer is an error rather than a
+/// memory hog in the chat history.
+pub const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const BODY_EXCERPT_CHARS: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,7 +61,12 @@ impl ChatMessage {
 pub enum LlmError {
     Config(String),
     Connection(String),
-    Http { status: u16, body: String },
+    /// The request took longer than the given number of seconds.
+    Timeout(u64),
+    Http {
+        status: u16,
+        body: String,
+    },
     MalformedResponse(String),
 }
 
@@ -62,6 +76,12 @@ impl fmt::Display for LlmError {
             LlmError::Config(message) => write!(f, "{message}"),
             LlmError::Connection(message) => {
                 write!(f, "Could not reach the LLM endpoint: {message}")
+            }
+            LlmError::Timeout(seconds) => {
+                write!(
+                    f,
+                    "The LLM endpoint did not answer within {seconds} seconds."
+                )
             }
             LlmError::Http { status, body } => {
                 write!(f, "The LLM endpoint returned HTTP {status}: {body}")
@@ -96,7 +116,30 @@ struct Choice {
 
 #[derive(Deserialize)]
 struct ResponseMessage {
-    content: Option<String>,
+    content: Option<Content>,
+}
+
+/// Message content is a string, but some servers send an array of typed parts instead.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Deserialize)]
+struct ContentPart {
+    #[serde(default)]
+    text: String,
+}
+
+impl Content {
+    fn into_text(self) -> String {
+        match self {
+            Content::Text(text) => text,
+            Content::Parts(parts) => parts.into_iter().map(|part| part.text).collect(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -112,43 +155,72 @@ struct ModelEntry {
 /// Sends `messages` to `{base_url}/chat/completions` and returns the first choice's content.
 pub fn complete(config: &Config, messages: &[ChatMessage]) -> Result<String, LlmError> {
     let model = config.require_model().map_err(LlmError::Config)?;
-    let request = http_client(REQUEST_TIMEOUT)?
-        .post(endpoint(config, "chat/completions"))
+    let request = http_client()
+        .post(endpoint(config, "chat/completions")?)
+        .timeout(REQUEST_TIMEOUT)
         .json(&CompletionRequest { model, messages });
-    let body = send(authorized(request, config))?;
+    let body = send(authorized(request, config), REQUEST_TIMEOUT)?;
     let parsed: CompletionResponse =
         serde_json::from_str(&body).map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
-    parsed
+    let content = parsed
         .choices
         .into_iter()
         .next()
         .and_then(|choice| choice.message.content)
+        .map(Content::into_text)
+        .map(without_nul)
         .ok_or_else(|| {
             LlmError::MalformedResponse("the response contains no message content".to_string())
-        })
+        })?;
+    if content.trim().is_empty() {
+        return Err(LlmError::MalformedResponse(
+            "the reply is empty".to_string(),
+        ));
+    }
+    Ok(content)
 }
 
 /// Lists the model IDs from `{base_url}/models`, sorted and de-duplicated.
 pub fn list_models(config: &Config) -> Result<Vec<String>, LlmError> {
-    let request = http_client(LIST_MODELS_TIMEOUT)?.get(endpoint(config, "models"));
-    let body = send(authorized(request, config))?;
+    let request = http_client()
+        .get(endpoint(config, "models")?)
+        .timeout(LIST_MODELS_TIMEOUT);
+    let body = send(authorized(request, config), LIST_MODELS_TIMEOUT)?;
     let list: ModelList =
         serde_json::from_str(&body).map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
-    let mut ids: Vec<String> = list.data.into_iter().map(|model| model.id).collect();
+    let mut ids: Vec<String> = list
+        .data
+        .into_iter()
+        .map(|model| without_nul(model.id))
+        .collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
 }
 
-fn http_client(timeout: Duration) -> Result<reqwest::blocking::Client, LlmError> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| LlmError::Connection(e.to_string()))
+/// One client for the process: each `reqwest::blocking::Client` owns a runtime thread, so
+/// building one per request would spawn and tear down a thread every time. Per-request
+/// budgets are set on the requests; the client itself only limits connecting.
+fn http_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(None)
+            .build()
+            .expect("the default TLS backend is available")
+    })
 }
 
-fn endpoint(config: &Config, path: &str) -> String {
-    format!("{}/{path}", config.base_url.trim_end_matches('/'))
+/// `{base_url}/{path}`, with the base URL checked as the Preferences dialog checks it.
+fn endpoint(config: &Config, path: &str) -> Result<reqwest::Url, LlmError> {
+    let mut base = Config::parse_base_url(&config.base_url).map_err(LlmError::Config)?;
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
+    }
+    base.join(path)
+        .map_err(|e| LlmError::Config(format!("The base URL is not usable: {e}")))
 }
 
 fn authorized(
@@ -161,15 +233,45 @@ fn authorized(
     }
 }
 
-/// Sends the request and returns the body of a successful response.
-fn send(request: reqwest::blocking::RequestBuilder) -> Result<String, LlmError> {
-    let response = request
-        .send()
-        .map_err(|e| LlmError::Connection(e.to_string()))?;
+/// GTK labels cannot hold NUL characters (glib panics on them), so they are dropped from
+/// everything the endpoint sends, both raw (error bodies) and JSON-decoded (`"\\u0000"`).
+fn without_nul(text: String) -> String {
+    if text.contains('\0') {
+        text.replace('\0', "")
+    } else {
+        text
+    }
+}
+
+/// Sends the request and returns the body of a successful response, capped at
+/// `MAX_RESPONSE_BYTES` and stripped of NUL characters.
+fn send(request: reqwest::blocking::RequestBuilder, timeout: Duration) -> Result<String, LlmError> {
+    let mut response = request.send().map_err(|e| connection_error(e, timeout))?;
     let status = response.status();
-    let body = response
-        .text()
-        .map_err(|e| LlmError::Connection(e.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            match e
+                .into_inner()
+                .and_then(|e| e.downcast::<reqwest::Error>().ok())
+            {
+                Some(e) => connection_error(*e, timeout),
+                None => LlmError::Connection("the response could not be read".to_string()),
+            }
+        })?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(too_large());
+    }
+    let body = without_nul(String::from_utf8_lossy(&bytes).into_owned());
     if !status.is_success() {
         return Err(LlmError::Http {
             status: status.as_u16(),
@@ -177,6 +279,26 @@ fn send(request: reqwest::blocking::RequestBuilder) -> Result<String, LlmError> 
         });
     }
     Ok(body)
+}
+
+fn too_large() -> LlmError {
+    LlmError::MalformedResponse(format!(
+        "the reply is larger than {} MiB",
+        MAX_RESPONSE_BYTES / (1024 * 1024)
+    ))
+}
+
+/// Maps a transport error, telling a timeout apart from an unreachable endpoint and hiding any
+/// credentials the user may have typed into the URL, which reqwest would otherwise print.
+fn connection_error(mut error: reqwest::Error, timeout: Duration) -> LlmError {
+    if error.is_timeout() {
+        return LlmError::Timeout(timeout.as_secs());
+    }
+    if let Some(url) = error.url_mut() {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+    }
+    LlmError::Connection(error.to_string())
 }
 
 fn excerpt(body: &str) -> String {
@@ -401,5 +523,125 @@ mod tests {
 
         let error = list_models(&config(&server, None)).unwrap_err();
         assert!(matches!(error, LlmError::MalformedResponse(_)), "{error:?}");
+    }
+    #[test]
+    fn nul_characters_are_removed_from_replies() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(r#"{"choices":[{"message":{"content":"Hel\u0000lo"}}]}"#)
+            .create();
+
+        let reply = complete(&config(&server, None), &[ChatMessage::user("hi")]);
+        assert_eq!(reply, Ok("Hello".to_string()));
+    }
+
+    #[test]
+    fn nul_characters_are_removed_from_error_bodies() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body(b"bo\0om".as_slice())
+            .create();
+
+        let error = complete(&config(&server, None), &[ChatMessage::user("hi")]).unwrap_err();
+        assert_eq!(
+            error,
+            LlmError::Http {
+                status: 500,
+                body: "boom".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn content_parts_are_joined() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(
+                r#"{"choices":[{"message":{"content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}]}}]}"#,
+            )
+            .create();
+
+        let reply = complete(&config(&server, None), &[ChatMessage::user("hi")]);
+        assert_eq!(reply, Ok("Hello".to_string()));
+    }
+
+    #[test]
+    fn null_content_is_malformed_response() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(r#"{"choices":[{"message":{"content":null}}]}"#)
+            .create();
+
+        let error = complete(&config(&server, None), &[ChatMessage::user("hi")]).unwrap_err();
+        assert!(matches!(error, LlmError::MalformedResponse(_)), "{error:?}");
+    }
+
+    #[test]
+    fn empty_content_is_malformed_response() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(r#"{"choices":[{"message":{"content":"  \n"}}]}"#)
+            .create();
+
+        let error = complete(&config(&server, None), &[ChatMessage::user("hi")]).unwrap_err();
+        assert_eq!(
+            error,
+            LlmError::MalformedResponse("the reply is empty".to_string())
+        );
+    }
+
+    #[test]
+    fn oversized_reply_is_rejected_while_reading() {
+        let mut server = mockito::Server::new();
+        let body = "x".repeat(MAX_RESPONSE_BYTES as usize + 1);
+        server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_chunked_body(move |w| w.write_all(body.as_bytes()))
+            .create();
+
+        let error = list_models(&config(&server, None)).unwrap_err();
+        assert!(error.to_string().contains("larger than 8 MiB"), "{error}");
+    }
+
+    #[test]
+    fn base_url_with_a_query_is_a_config_error() {
+        let config = Config {
+            base_url: "http://127.0.0.1:1/v1?x=1".to_string(),
+            api_key: None,
+            model: Some("m".to_string()),
+        };
+        let error = complete(&config, &[ChatMessage::user("hi")]).unwrap_err();
+        assert!(matches!(error, LlmError::Config(_)), "{error:?}");
+    }
+
+    #[test]
+    fn credentials_in_the_base_url_are_rejected_before_sending() {
+        let config = Config {
+            base_url: "http://user:secret@127.0.0.1:1/v1".to_string(),
+            api_key: None,
+            model: Some("m".to_string()),
+        };
+        let error = complete(&config, &[ChatMessage::user("hi")]).unwrap_err();
+        assert!(matches!(error, LlmError::Config(_)), "{error:?}");
+        assert!(!error.to_string().contains("secret"), "{error}");
+    }
+
+    #[test]
+    fn timeout_has_its_own_message() {
+        assert_eq!(
+            LlmError::Timeout(30).to_string(),
+            "The LLM endpoint did not answer within 30 seconds."
+        );
     }
 }
