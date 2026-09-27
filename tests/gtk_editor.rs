@@ -3,44 +3,29 @@
 //! It needs a display; `dev/headless.sh cargo test` provides a private one and sets
 //! `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead of skipping silently.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use common::Checks;
 use counterpoint::chat_markup;
 use counterpoint::document;
 use counterpoint::ui::editor::EditorView;
 use gtk::prelude::*;
 
-#[derive(Default)]
-struct Checks {
-    failures: usize,
-    passed: usize,
-}
-
-impl Checks {
-    fn check(&mut self, ok: bool, what: &str) {
-        if ok {
-            self.passed += 1;
-        } else {
-            self.failures += 1;
-            println!("FAIL: {what}");
-        }
-    }
-}
-
 fn main() -> ExitCode {
-    if gtk::init().is_err() {
-        if std::env::var_os("COUNTERPOINT_REQUIRE_DISPLAY").is_some() {
-            println!("FAIL: no display although COUNTERPOINT_REQUIRE_DISPLAY is set");
-            return ExitCode::FAILURE;
-        }
-        println!("SKIPPED: no display");
-        return ExitCode::SUCCESS;
+    if let Err(code) = common::init_or_skip() {
+        return code;
     }
-    sourceview5::init();
 
     let mut checks = Checks::default();
-    for path in round_trip_files() {
+    let files = round_trip_files();
+    checks.check(
+        files.iter().any(|p| p.ends_with("README.md")),
+        "git ls-files found the repository's Markdown files",
+    );
+    for path in files {
         round_trip(&mut checks, &path);
     }
     loading_is_not_undoable(&mut checks);
@@ -50,13 +35,9 @@ fn main() -> ExitCode {
     zoom_changes_the_editor_font_size(&mut checks);
     zoom_is_independent_per_editor(&mut checks);
     chat_markup_is_valid_for_labels(&mut checks);
+    hostile_markup_is_shown_as_text(&mut checks);
 
-    println!("{} passed, {} failed", checks.passed, checks.failures);
-    if checks.failures == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    checks.finish()
 }
 
 /// Every git-tracked Markdown file, the fixtures, and any colon-separated paths in
@@ -91,17 +72,21 @@ fn round_trip_files() -> Vec<PathBuf> {
 fn round_trip(checks: &mut Checks, path: &Path) {
     let what = format!("round trip of {}", path.display());
     let Ok(bytes) = std::fs::read(path) else {
-        checks.check(false, &format!("{what}: cannot read the file"));
+        checks.fail(&format!("{what}: cannot read the file"));
         return;
     };
     let Ok(contents) = String::from_utf8(bytes.clone()) else {
-        checks.check(false, &format!("{what}: not UTF-8"));
+        checks.fail(&format!("{what}: not UTF-8"));
         return;
     };
     let editor = EditorView::new();
-    let (text, crlf) = document::from_disk(&contents);
+    let (text, format) = document::from_disk(&contents);
     editor.load(&text);
-    let saved = document::to_disk(&editor.text(), crlf);
+    checks.check(
+        !editor.text().starts_with('\u{FEFF}'),
+        &format!("{what}: no byte order mark reaches the editor"),
+    );
+    let saved = document::to_disk(&editor.text(), format);
     checks.check(saved.as_bytes() == bytes.as_slice(), &what);
 }
 
@@ -147,8 +132,8 @@ fn apply_leaves_text_outside_the_span_alone(checks: &mut Checks) {
     let after = buffer.create_mark(None, &buffer.iter_at_offset(24), true);
     editor.apply_markdown("Keep this. Rewrite it all. Keep the end.");
     checks.check(
-        buffer.iter_at_mark(&buffer.get_insert()).offset() == 4,
-        "the cursor before the change stays put",
+        editor.selection_text() == "Rewrite it all",
+        "the applied change (without the unchanged trailing period) is selected",
     );
     checks.check(
         buffer.iter_at_mark(&before).offset() == 2,
@@ -172,7 +157,7 @@ fn apply_counts_characters(checks: &mut Checks) {
 }
 
 /// The pixel height of the editor's first line, once its style and layout are up to date. The
-/// zoom CSS provider is registered on the display, so the view must be realized and drawn (via
+/// zoom CSS is registered on the display, so the view must be realized and drawn (via
 /// `gtk::test_widget_wait_for_draw`, which pumps the main loop until a frame is rendered) for a
 /// style change to take effect; neither plain `MainContext` iteration nor
 /// `pango_context().font_description()` picks up a relative `font-size` set through CSS under
@@ -202,13 +187,21 @@ fn zoom_changes_the_editor_font_size(checks: &mut Checks) {
             "zooming to 200% increases the editor's line height ({height_100} -> {height_200})"
         ),
     );
+    let zoom_classes: Vec<_> = editor
+        .widget()
+        .css_classes()
+        .into_iter()
+        .filter(|c| c.starts_with("counterpoint-zoom-"))
+        .collect();
+    checks.check(
+        zoom_classes.len() == 1 && zoom_classes[0] == "counterpoint-zoom-200",
+        &format!("the editor carries exactly its current zoom class, got {zoom_classes:?}"),
+    );
     window.destroy();
 }
 
-/// Each `EditorView` registers its zoom CSS provider under its own style class, so zooming one
-/// editor must never affect another's line height. Checked in both directions: whichever
-/// provider a naive shared class would let win, that direction alone would still pass, so this
-/// also asserts that the zoomed editor's own height actually changes.
+/// Zoom is a per-editor style class, so zooming one editor must never affect another's line
+/// height. Checked in both directions, and that the zoomed editor's own height actually changes.
 fn zoom_is_independent_per_editor(checks: &mut Checks) {
     let first = EditorView::new();
     first.load("One line of example text.");
@@ -268,4 +261,36 @@ fn chat_markup_is_valid_for_labels(checks: &mut Checks) {
             &format!("GTK accepts the markup for {markdown:?}"),
         );
     }
+}
+
+/// Markup-looking text from the model must come out as that literal text, never as markup.
+/// (Markdown itself decodes entities: `&#0;` becomes U+FFFD and `&amp;lt;` becomes `&lt;`.)
+fn hostile_markup_is_shown_as_text(checks: &mut Checks) {
+    for (hostile, shown) in [
+        (
+            "<span foreground=\"red\" size=\"9999999\">x</span>",
+            "<span foreground=\"red\" size=\"9999999\">x</span>",
+        ),
+        (
+            "</s></span><a href=\"javascript:1\">y</a> &#0; &amp;lt;",
+            "</s></span><a href=\"javascript:1\">y</a> \u{FFFD} &lt;",
+        ),
+    ] {
+        let label = gtk::Label::new(None);
+        label.set_markup(&chat_markup::to_pango(hostile));
+        checks.check(
+            label.text() == shown,
+            &format!(
+                "the reply {hostile:?} is shown literally, got {:?}",
+                label.text()
+            ),
+        );
+    }
+    let original = "</s><b>x";
+    let label = gtk::Label::new(None);
+    label.set_markup(&format!("<s>{}</s>", chat_markup::escape(original)));
+    checks.check(
+        label.text() == original,
+        "a proposal's original text is escaped inside the strike-through",
+    );
 }
