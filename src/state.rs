@@ -43,19 +43,20 @@ impl State {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(error)?;
         }
-        let mut json = serde_json::to_string_pretty(self).expect("state always serializes");
+        let mut json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Could not save the state to {}: {e}", path.display()))?;
         json.push('\n');
 
         let temp_path = path.with_extension("json.tmp");
         let _ = fs::remove_file(&temp_path);
+        // No `sync_all` before the rename: this is a convenience file rewritten on every zoom
+        // step on the main thread, and the temp-file-then-rename already prevents a truncated
+        // file from ever replacing it.
         let result = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)
-            .and_then(|mut file| {
-                file.write_all(json.as_bytes())?;
-                file.sync_all()
-            })
+            .and_then(|mut file| file.write_all(json.as_bytes()))
             .and_then(|()| fs::rename(&temp_path, path));
         if result.is_err() {
             let _ = fs::remove_file(&temp_path);
@@ -172,6 +173,21 @@ mod tests {
             zoom: None,
         };
         assert_eq!(state.remembered_folder(), Some(dir.path()));
+    }
+
+    #[test]
+    fn save_to_reports_an_error_instead_of_panicking_for_a_non_utf8_last_folder() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let state = State {
+            last_folder: Some(PathBuf::from(OsStr::from_bytes(b"/tmp/caf\xe9"))),
+            ..Default::default()
+        };
+        assert!(state.save_to(&path).is_err());
+        assert!(!path.exists(), "a failed save must write nothing");
     }
 
     #[test]
