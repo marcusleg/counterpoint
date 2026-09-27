@@ -8,7 +8,6 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::document;
-use crate::prompt::Mode;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
 use crate::ui::preferences_dialog::PreferencesDialog;
@@ -17,8 +16,9 @@ pub struct MainWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
     editor: EditorView,
-    /// Owned here: the pane's own signal handlers only hold weak references.
-    chat: Rc<ChatPane>,
+    /// Owned here: the pane's own signal handlers only hold weak references; never read, held
+    /// only to keep the pane alive.
+    _chat: Rc<ChatPane>,
     /// The open file, or `None` for a new document.
     path: RefCell<Option<PathBuf>>,
     /// True if the open file uses CRLF line endings, so saving restores them.
@@ -69,33 +69,6 @@ impl MainWindow {
             .position(960)
             .build();
 
-        let mode = adw::ToggleGroup::new();
-        mode.add(
-            adw::Toggle::builder()
-                .name("sparring")
-                .label("Sparring")
-                .tooltip("The LLM can read the document but not change it")
-                .build(),
-        );
-        mode.add(
-            adw::Toggle::builder()
-                .name("ghostwriting")
-                .label("Ghostwriting")
-                .tooltip("The LLM can propose changes that you apply or reject")
-                .build(),
-        );
-        mode.set_active_name(Some("sparring"));
-        mode.connect_active_name_notify(glib::clone!(
-            #[weak]
-            chat,
-            move |group| {
-                chat.set_mode(match group.active_name().as_deref() {
-                    Some("ghostwriting") => Mode::Ghostwriting,
-                    _ => Mode::Sparring,
-                });
-            }
-        ));
-
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .tooltip_text("Main Menu")
@@ -106,7 +79,6 @@ impl MainWindow {
         let title = adw::WindowTitle::new("", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         header.pack_end(&menu_button);
-        header.pack_end(&mode);
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
@@ -123,7 +95,7 @@ impl MainWindow {
             window,
             title,
             editor,
-            chat,
+            _chat: chat,
             path: RefCell::new(None),
             crlf: Cell::new(false),
             close_confirmed: Cell::new(false),
@@ -132,11 +104,6 @@ impl MainWindow {
         this.update_title();
         this.follow_dark_mode();
         this.add_actions();
-        // Explicit rather than relying on both defaults happening to agree.
-        this.chat.set_mode(match mode.active_name().as_deref() {
-            Some("ghostwriting") => Mode::Ghostwriting,
-            _ => Mode::Sparring,
-        });
 
         this.editor.buffer().connect_modified_changed(glib::clone!(
             #[weak]
