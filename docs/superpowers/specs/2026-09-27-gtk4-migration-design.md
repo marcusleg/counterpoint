@@ -126,10 +126,10 @@ input keys.
   the path and title update. A new document keeps LF.
 - Unsaved-changes guard: Open, the window's `close-request` and Quit share one helper,
   `confirm_discard(then)`. When the buffer is modified it shows an `AdwAlertDialog` ("Save
-  changes?") with responses Cancel (default and close response), Discard (destructive) and Save
-  (suggested). Save runs Save (or Save As) and continues only if the save succeeded; Discard
+  changes?") with responses Cancel (close response, so Escape cancels), Discard (destructive) and Save
+  (suggested and default, so Enter saves). Save runs Save (or Save As) and continues only if the save succeeded; Discard
   continues; Cancel does nothing. `close-request` returns `Propagation::Stop` while the dialog is
-  pending and closes the window once the user saves or discards. Quit calls `window.close()`.
+  pending and closes the window once the user saves or discards. While the alert (or a save it started) is pending, further close, Quit or Open requests are ignored, so only one alert is ever shown. Quit calls `window.close()`.
 - File errors appear in an `AdwAlertDialog` titled "Error" with an OK response.
 
 ## Chat pane

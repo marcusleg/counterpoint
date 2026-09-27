@@ -23,6 +23,9 @@ pub struct MainWindow {
     crlf: Cell<bool>,
     /// Set once the user has saved or discarded changes, so the window may close.
     close_confirmed: Cell<bool>,
+    /// Set while the unsaved-changes alert (and a save it starts) is in progress, so another
+    /// close, Quit or Open waits for it instead of opening a second alert.
+    confirm_pending: Cell<bool>,
 }
 
 impl MainWindow {
@@ -104,6 +107,7 @@ impl MainWindow {
             path: RefCell::new(None),
             crlf: Cell::new(false),
             close_confirmed: Cell::new(false),
+            confirm_pending: Cell::new(false),
         });
         this.update_title();
         this.follow_dark_mode();
@@ -187,6 +191,9 @@ impl MainWindow {
         if !self.editor.buffer().is_modified() {
             return true;
         }
+        if self.confirm_pending.replace(true) {
+            return false;
+        }
         let dialog = adw::AlertDialog::builder()
             .heading("Save changes?")
             .body("The document has unsaved changes. Save them first?")
@@ -200,11 +207,13 @@ impl MainWindow {
         ]);
         dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-        match dialog.choose_future(Some(&self.window)).await.as_str() {
+        let proceed = match dialog.choose_future(Some(&self.window)).await.as_str() {
             "discard" => true,
             "save" => self.save().await,
             _ => false,
-        }
+        };
+        self.confirm_pending.set(false);
+        proceed
     }
 
     async fn open(self: &Rc<Self>) {
