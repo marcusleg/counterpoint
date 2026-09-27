@@ -58,7 +58,8 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   inventing no facts.
 - R12. A proposal shows a before/after preview with **Apply** and **Reject**. Apply fails with an
   explanation when an original is empty, not found, found more than once or overlaps another
-  edit. Matches must not start or end inside a word.
+  edit. Matches must not start or end inside a word. In an empty document, an empty original
+  stands for the whole document, so the LLM can write a first draft.
 - R13. An applied change is selected in the editor and is a single undo step, undoable from a
   toast or with Ctrl+Z.
 - R14. Every request includes the current document, so the model always sees the latest text,

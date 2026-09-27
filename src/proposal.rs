@@ -275,16 +275,22 @@ fn occurrences(source: &str, haystack: &Normalized, needle: &str) -> Vec<(usize,
 }
 
 /// Applies all edits or none. Each `original` must match exactly once, ignoring differences in
-/// whitespace, and no two edits may overlap.
+/// whitespace, and no two edits may overlap. In a blank document, where there is nothing to
+/// quote, a blank `original` stands for the whole document.
 pub fn apply(document_md: &str, edits: &[Edit]) -> Result<String, ApplyError> {
     let haystack = normalize(document_md);
+    let document_is_blank = document_md.trim().is_empty();
     let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(edits.len());
 
     for (index, edit) in edits.iter().enumerate() {
         let number = index + 1;
         let needle = normalize(edit.original.trim()).text;
         if needle.is_empty() {
-            return Err(ApplyError::EmptyOriginal { edit: number });
+            if !document_is_blank {
+                return Err(ApplyError::EmptyOriginal { edit: number });
+            }
+            spans.push((0, document_md.len(), index));
+            continue;
         }
         match occurrences(document_md, &haystack, &needle).as_slice() {
             [] => return Err(ApplyError::NotFound { edit: number }),
@@ -300,9 +306,10 @@ pub fn apply(document_md: &str, edits: &[Edit]) -> Result<String, ApplyError> {
 
     spans.sort_by_key(|(start, _, _)| *start);
     for pair in spans.windows(2) {
-        let (_, previous_end, previous) = pair[0];
+        let (previous_start, previous_end, previous) = pair[0];
         let (next_start, _, next) = pair[1];
-        if next_start < previous_end {
+        // Equal starts also clash when both spans are empty, as in an empty document.
+        if next_start < previous_end || next_start == previous_start {
             return Err(ApplyError::Overlapping {
                 edit: previous.max(next) + 1,
                 other: previous.min(next) + 1,
@@ -557,6 +564,24 @@ mod apply_tests {
     fn blank_original_is_rejected() {
         let result = apply("Text.", &[edit("  \n", "x")]);
         assert_eq!(result, Err(ApplyError::EmptyOriginal { edit: 1 }));
+    }
+
+    #[test]
+    fn blank_original_fills_a_blank_document() {
+        for doc in ["", "\n", "  \n\n"] {
+            let result = apply(doc, &[edit("", "# Draft\n\nFirst paragraph.")]);
+            assert_eq!(
+                result,
+                Ok("# Draft\n\nFirst paragraph.".to_string()),
+                "{doc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_blank_originals_in_a_blank_document_overlap() {
+        let result = apply("", &[edit("", "a"), edit("", "b")]);
+        assert_eq!(result, Err(ApplyError::Overlapping { edit: 2, other: 1 }));
     }
 
     #[test]

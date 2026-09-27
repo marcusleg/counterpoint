@@ -813,6 +813,44 @@ fn chat(
     );
     proposal.remove();
 
+    // In an empty document there is nothing to quote: a blank original writes the first draft.
+    buffer.set_text("");
+    let kickstart = server
+        .mock("POST", "/v1/chat/completions")
+        .with_body(reply(
+            "A first draft.\n\n```original\n```\n```replacement\n# Draft\n\nOpening.\n```",
+        ))
+        .create();
+    input.buffer().set_text("Kickstart a post.");
+    send.emit_clicked();
+    pump_until(
+        checks,
+        "a kickstart proposal arrives",
+        REPLY_TIMEOUT,
+        || chat_rows(root, "chat-proposal").len() == 3,
+    );
+    if let Some(card) = chat_rows(root, "chat-proposal").get(2) {
+        checks.check(
+            !widgets_under(card)
+                .iter()
+                .any(|w| w.has_css_class("edit-original")),
+            "a blank original shows no empty before box",
+        );
+        find_button(card, "_Apply")
+            .expect("Apply button")
+            .emit_clicked();
+        pump();
+    }
+    checks.check(
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == "# Draft\n\nOpening.",
+        "Apply fills an empty document",
+    );
+    checks.check(
+        chat_rows(root, "chat-error").len() == 1,
+        "filling an empty document reports no error",
+    );
+    kickstart.remove();
+
     // An HTTP error becomes an error row and frees the input.
     server
         .mock("POST", "/v1/chat/completions")
