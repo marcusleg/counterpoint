@@ -37,6 +37,26 @@ pub struct ChatPane {
 
 impl ChatPane {
     pub fn new(editor: EditorView) -> Rc<Self> {
+        let mode = adw::ToggleGroup::builder()
+            .homogeneous(true)
+            .hexpand(true)
+            .build();
+        mode.add(
+            adw::Toggle::builder()
+                .name("sparring")
+                .label("Sparring")
+                .tooltip("The LLM can read the document but not change it")
+                .build(),
+        );
+        mode.add(
+            adw::Toggle::builder()
+                .name("ghostwriting")
+                .label("Ghostwriting")
+                .tooltip("The LLM can propose changes that you apply or reject")
+                .build(),
+        );
+        mode.set_active_name(Some("sparring"));
+
         let selection_label = gtk::Label::builder()
             .label(NO_SELECTION)
             .xalign(0.0)
@@ -112,6 +132,7 @@ impl ChatPane {
             .margin_start(12)
             .margin_end(12)
             .build();
+        root.append(&mode);
         root.append(&messages);
         root.append(&selection_label);
         root.append(&input_scroller);
@@ -133,6 +154,17 @@ impl ChatPane {
             busy_label,
         });
         pane.update_placeholder();
+
+        mode.connect_active_name_notify(glib::clone!(
+            #[weak]
+            pane,
+            move |group| {
+                pane.set_mode(match group.active_name().as_deref() {
+                    Some("ghostwriting") => Mode::Ghostwriting,
+                    _ => Mode::Sparring,
+                });
+            }
+        ));
 
         new_conversation.connect_clicked(glib::clone!(
             #[weak]
@@ -209,7 +241,7 @@ impl ChatPane {
         &self.root
     }
 
-    pub fn set_mode(&self, mode: Mode) {
+    fn set_mode(&self, mode: Mode) {
         self.mode.set(mode);
         self.update_placeholder();
     }

@@ -75,9 +75,7 @@ Header bar:
 
 - Title: `AdwWindowTitle` with the file name ("Untitled" for a new document), prefixed with
   "• " while modified, and the file's folder as subtitle.
-- End: an `AdwToggleGroup` with "Sparring" and "Ghostwriting" toggles (tooltips: "The LLM can
-  read the document but not change it" / "The LLM can propose changes that you apply or
-  reject"), then a `GtkMenuButton` with the primary menu.
+- End: a `GtkMenuButton` with the primary menu.
 
 The window title is "• post.md — Counterpoint" (marker only while modified).
 
@@ -141,6 +139,11 @@ keys.
 
 A vertical box with 12 px margins, top to bottom:
 
+0. Mode toggle at the top: `AdwToggleGroup` Sparring / Ghostwriting, full width
+   (`homogeneous(true)`, `hexpand(true)`), with the tooltips "The LLM can read the document but
+   not change it" / "The LLM can propose changes that you apply or reject". The chat pane owns
+   this toggle and sets its own mode from it; the header bar holds only the title and the
+   primary menu.
 1. Message list: `GtkScrolledWindow` → `GtkListBox` (selection mode none,
    `boxed-list-separate` style). The pane keeps a clone of each rendered `Entry`. `render()`
    compares with `conversation.entries()`: if the conversation is shorter, it clears all rows;

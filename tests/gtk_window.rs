@@ -176,6 +176,10 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         placeholder.text().starts_with("Ask for a change"),
         "the placeholder switches with the mode",
     );
+    checks.check(
+        mode.ancestor(adw::HeaderBar::static_type()).is_none(),
+        "the mode toggle lives in the chat pane, not the header bar",
+    );
 
     let buffer = editor.buffer();
     buffer.set_text("Some example text.");
