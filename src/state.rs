@@ -1,5 +1,5 @@
-//! Small session state remembered across restarts: the most recently used folder and the
-//! editor's zoom level. Kept in its own file, separate from the LLM settings in `config.rs`,
+//! Small session state remembered across restarts: the most recently used folder, the recently
+//! opened files and the editor's zoom level. Kept in its own file, separate from the LLM settings in `config.rs`,
 //! since it is a convenience rather than user configuration: a missing or broken state file
 //! must never block the app.
 
@@ -12,11 +12,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::xdg;
 
+/// How many files **Open Recent** lists.
+pub const MAX_RECENT_FILES: usize = 10;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
     pub last_folder: Option<PathBuf>,
     pub zoom: Option<u32>,
+    /// Recently opened or saved files, newest first, at most `MAX_RECENT_FILES`.
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl State {
@@ -72,6 +77,22 @@ impl State {
         result.map_err(|e| error(&e))
     }
 
+    /// Moves `path` to the front of the recent files, dropping the oldest beyond
+    /// `MAX_RECENT_FILES`. A path that is not valid UTF-8 is skipped: JSON cannot hold it, and
+    /// it would make every later save of the state fail.
+    pub fn add_recent(&mut self, path: &Path) {
+        if path.to_str().is_none() {
+            return;
+        }
+        self.forget_recent(path);
+        self.recent_files.insert(0, path.to_path_buf());
+        self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+
+    pub fn forget_recent(&mut self, path: &Path) {
+        self.recent_files.retain(|known| known != path);
+    }
+
     /// `last_folder`, but only if it still exists as a directory.
     pub fn remembered_folder(&self) -> Option<&Path> {
         self.last_folder.as_deref().filter(|folder| folder.is_dir())
@@ -125,6 +146,7 @@ mod tests {
         let state = State {
             last_folder: Some(PathBuf::from("/tmp/example")),
             zoom: Some(150),
+            recent_files: vec![PathBuf::from("/tmp/example/post.md")],
         };
         state.save_to(&path).unwrap();
         assert_eq!(State::load_from(&path), state);
@@ -149,7 +171,7 @@ mod tests {
     fn remembered_folder_is_none_for_a_missing_directory() {
         let state = State {
             last_folder: Some(PathBuf::from("/no/such/directory/at/all")),
-            zoom: None,
+            ..Default::default()
         };
         assert_eq!(state.remembered_folder(), None);
     }
@@ -159,7 +181,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = State {
             last_folder: Some(dir.path().to_path_buf()),
-            zoom: None,
+            ..Default::default()
         };
         assert_eq!(state.remembered_folder(), Some(dir.path()));
     }
@@ -179,6 +201,71 @@ mod tests {
         assert!(!path.exists(), "a failed save must write nothing");
     }
 
+    #[test]
+    fn add_recent_puts_the_newest_file_first() {
+        let mut state = State::default();
+        state.add_recent(Path::new("/a.md"));
+        state.add_recent(Path::new("/b.md"));
+        assert_eq!(
+            state.recent_files,
+            vec![PathBuf::from("/b.md"), PathBuf::from("/a.md")]
+        );
+    }
+
+    #[test]
+    fn add_recent_moves_a_known_file_to_the_front_without_duplicating_it() {
+        let mut state = State::default();
+        state.add_recent(Path::new("/a.md"));
+        state.add_recent(Path::new("/b.md"));
+        state.add_recent(Path::new("/a.md"));
+        assert_eq!(
+            state.recent_files,
+            vec![PathBuf::from("/a.md"), PathBuf::from("/b.md")]
+        );
+    }
+
+    #[test]
+    fn add_recent_keeps_only_the_ten_newest_files() {
+        let mut state = State::default();
+        for i in 0..12 {
+            state.add_recent(&PathBuf::from(format!("/{i}.md")));
+        }
+        let expected: Vec<_> = (2..12)
+            .rev()
+            .map(|i| PathBuf::from(format!("/{i}.md")))
+            .collect();
+        assert_eq!(state.recent_files, expected);
+    }
+
+    #[test]
+    fn add_recent_skips_a_non_utf8_path_so_the_state_can_still_be_saved() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut state = State::default();
+        state.add_recent(Path::new(OsStr::from_bytes(b"/tmp/caf\xe9.md")));
+        assert!(state.recent_files.is_empty());
+    }
+
+    #[test]
+    fn forget_recent_removes_only_that_file() {
+        let mut state = State::default();
+        state.add_recent(Path::new("/a.md"));
+        state.add_recent(Path::new("/b.md"));
+        state.forget_recent(Path::new("/a.md"));
+        assert_eq!(state.recent_files, vec![PathBuf::from("/b.md")]);
+    }
+
+    #[test]
+    fn a_state_file_without_recent_files_loads_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, r#"{"last_folder": "/tmp", "zoom": 120}"#).unwrap();
+        let state = State::load_from(&path);
+        assert_eq!(state.zoom, Some(120));
+        assert!(state.recent_files.is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
     fn state_file_is_readable_only_by_the_owner() {
@@ -195,14 +282,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         State {
-            last_folder: None,
             zoom: Some(100),
+            ..Default::default()
         }
         .save_to(&path)
         .unwrap();
         State {
-            last_folder: None,
             zoom: Some(110),
+            ..Default::default()
         }
         .save_to(&path)
         .unwrap();
