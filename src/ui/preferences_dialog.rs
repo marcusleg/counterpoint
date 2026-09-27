@@ -4,13 +4,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::glib;
 
 use crate::config::Config;
 use crate::llm;
 use crate::model_requests::{self, ModelRequests};
+use crate::ui::run_blocking;
 
-const WORKER_FAILED: &str = "The request failed unexpectedly.";
+const CLEAR_TEXT_WARNING: &str = "This endpoint uses plain HTTP beyond this computer: the API \
+                                  key and your documents will travel unencrypted.";
 
 pub struct PreferencesDialog {
     dialog: adw::Dialog,
@@ -21,19 +23,21 @@ pub struct PreferencesDialog {
     models_button: gtk::MenuButton,
     refresh: gtk::Button,
     spinner: adw::Spinner,
+    /// Progress and the model count.
     status: gtk::Label,
+    /// Why the model list could not be loaded or the settings not saved.
+    error: gtk::Label,
+    /// Shown while the base URL is plain HTTP to another machine.
+    warning: gtk::Label,
     requests: RefCell<ModelRequests>,
 }
 
 impl PreferencesDialog {
     /// Shows the dialog over `parent` with the saved settings and a freshly loaded model list.
-    pub fn present(parent: &impl IsA<gtk::Widget>) {
-        let base_url = adw::EntryRow::builder()
-            .title("Base URL (OpenAI-compatible)")
-            .build();
-        let api_key = adw::PasswordEntryRow::builder()
-            .title("API key (optional)")
-            .build();
+    /// The returned dialog's `closed` signal tells when the settings may have changed.
+    pub fn present(parent: &impl IsA<gtk::Widget>) -> adw::Dialog {
+        let base_url = adw::EntryRow::builder().title("Base URL").build();
+        let api_key = adw::PasswordEntryRow::builder().title("API Key").build();
         let model = adw::EntryRow::builder().title("Model").build();
 
         let models = gtk::ListBox::builder()
@@ -52,7 +56,7 @@ impl PreferencesDialog {
             .build();
         let models_button = gtk::MenuButton::builder()
             .icon_name("pan-down-symbolic")
-            .tooltip_text("Available models")
+            .tooltip_text("Available Models")
             .valign(gtk::Align::Center)
             .sensitive(false)
             .popover(&models_popover)
@@ -60,14 +64,21 @@ impl PreferencesDialog {
             .build();
         let refresh = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Refresh the model list")
+            .tooltip_text("Refresh Model List")
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
         model.add_suffix(&models_button);
         model.add_suffix(&refresh);
 
-        let group = adw::PreferencesGroup::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("LLM Endpoint")
+            .description(
+                "An OpenAI-compatible chat completions API, for example Ollama at \
+                 http://localhost:11434/v1. The API key is optional and sent as a bearer token. \
+                 Every message sends the whole document to this endpoint.",
+            )
+            .build();
         group.add(&base_url);
         group.add(&api_key);
         group.add(&model);
@@ -83,11 +94,19 @@ impl PreferencesDialog {
         status_row.append(&spinner);
         status_row.append(&status);
 
-        let load_error = gtk::Label::builder()
+        let error = gtk::Label::builder()
             .xalign(0.0)
             .wrap(true)
             .visible(false)
+            .selectable(true)
             .css_classes(["error"])
+            .build();
+        let warning = gtk::Label::builder()
+            .label(CLEAR_TEXT_WARNING)
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["warning"])
             .build();
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -98,12 +117,17 @@ impl PreferencesDialog {
             .margin_end(24)
             .build();
         content.append(&group);
+        content.append(&warning);
         content.append(&status_row);
-        content.append(&load_error);
+        content.append(&error);
 
-        let cancel = gtk::Button::with_label("Cancel");
+        let cancel = gtk::Button::builder()
+            .label("_Cancel")
+            .use_underline(true)
+            .build();
         let save = gtk::Button::builder()
-            .label("Save")
+            .label("_Save")
+            .use_underline(true)
             .css_classes(["suggested-action"])
             .build();
         let header = adw::HeaderBar::builder()
@@ -132,6 +156,8 @@ impl PreferencesDialog {
             refresh,
             spinner,
             status,
+            error,
+            warning,
             requests: RefCell::new(ModelRequests::default()),
         });
 
@@ -139,11 +165,11 @@ impl PreferencesDialog {
             Ok(config) => this.show_config(&config),
             Err(message) => {
                 this.show_config(&Config::default());
-                load_error.set_text(&message);
-                load_error.set_visible(true);
-                save.set_label("Overwrite");
+                this.show_error(Some(&message));
+                save.set_label("_Overwrite");
             }
         }
+        this.update_warning();
 
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -176,6 +202,11 @@ impl PreferencesDialog {
             this.base_url.upcast_ref::<adw::EntryRow>(),
             this.api_key.upcast_ref(),
         ] {
+            row.connect_changed(glib::clone!(
+                #[weak]
+                this,
+                move |_| this.update_warning()
+            ));
             row.connect_entry_activated(glib::clone!(
                 #[weak]
                 this,
@@ -198,6 +229,7 @@ impl PreferencesDialog {
 
         this.dialog.present(Some(parent));
         this.fetch_models(true);
+        this.dialog.clone()
     }
 
     fn show_config(&self, config: &Config) {
@@ -205,6 +237,17 @@ impl PreferencesDialog {
         self.api_key
             .set_text(config.api_key.as_deref().unwrap_or(""));
         self.model.set_text(config.model.as_deref().unwrap_or(""));
+    }
+
+    fn show_error(&self, message: Option<&str>) {
+        self.error.set_text(message.unwrap_or(""));
+        self.error.set_visible(message.is_some());
+    }
+
+    fn update_warning(&self) {
+        let config = Config::from_fields(&self.base_url.text(), &self.api_key.text(), "");
+        self.warning
+            .set_visible(config.api_key.is_some() && config.sends_in_the_clear());
     }
 
     fn fetch_models(self: &Rc<Self>, force: bool) {
@@ -216,15 +259,13 @@ impl PreferencesDialog {
         self.spinner.set_visible(true);
         self.refresh.set_sensitive(false);
         self.status.set_text("Loading models…");
+        self.show_error(None);
 
         let config = Config::from_fields(&base_url, &api_key, "");
-        let models =
-            gio::spawn_blocking(move || llm::list_models(&config).map_err(|e| e.to_string()));
         let this = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = models
-                .await
-                .unwrap_or_else(|_| Err(WORKER_FAILED.to_string()));
+            let result =
+                run_blocking(move || llm::list_models(&config).map_err(|e| e.to_string())).await;
             let Some(this) = this.upgrade() else {
                 return;
             };
@@ -244,7 +285,8 @@ impl PreferencesDialog {
                 models
             }
             Err(message) => {
-                self.status.set_text(&message);
+                self.status.set_text("");
+                self.show_error(Some(&message));
                 Vec::new()
             }
         };
@@ -261,11 +303,14 @@ impl PreferencesDialog {
             &self.api_key.text(),
             &self.model.text(),
         );
-        match config.save() {
+        let result = Config::parse_base_url(&config.base_url)
+            .map(|_| ())
+            .and_then(|()| config.save());
+        match result {
             Ok(()) => {
                 self.dialog.close();
             }
-            Err(message) => self.status.set_text(&message),
+            Err(message) => self.show_error(Some(&message)),
         }
     }
 }

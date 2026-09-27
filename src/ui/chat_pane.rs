@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gdk, gio, glib, pango};
+use gtk::{gdk, glib, pango};
 
 use crate::chat::{Conversation, Entry, ProposalState};
 use crate::chat_markup;
@@ -13,15 +13,24 @@ use crate::llm::{self, LlmError};
 use crate::prompt::{self, Mode};
 use crate::proposal::Edit;
 use crate::ui::editor::EditorView;
+use crate::ui::run_blocking;
 
 const NO_SELECTION: &str = "No selection — whole document";
-const WORKER_FAILED: &str = "The request failed unexpectedly.";
+/// The longest selection preview; the label ellipsizes anyway, and laying out a whole selected
+/// document on every cursor move would be wasted work.
+const SELECTION_PREVIEW_CHARS: usize = 120;
 
 pub struct ChatPane {
     root: gtk::Box,
     editor: EditorView,
+    toasts: adw::ToastOverlay,
     conversation: RefCell<Conversation>,
     mode: Cell<Mode>,
+    config_banner: adw::Banner,
+    empty_state: adw::StatusPage,
+    /// Shows the empty state or the message list.
+    stack: gtk::Stack,
+    messages: gtk::ScrolledWindow,
     selection_label: gtk::Label,
     list: gtk::ListBox,
     /// The entries currently shown, one per list row.
@@ -31,12 +40,13 @@ pub struct ChatPane {
     input: gtk::TextView,
     placeholder: gtk::Label,
     send_button: gtk::Button,
+    stop_button: gtk::Button,
     spinner: adw::Spinner,
     busy_label: gtk::Label,
 }
 
 impl ChatPane {
-    pub fn new(editor: EditorView) -> Rc<Self> {
+    pub fn new(editor: EditorView, toasts: adw::ToastOverlay) -> Rc<Self> {
         let mode = adw::ToggleGroup::builder()
             .homogeneous(true)
             .hexpand(true)
@@ -57,6 +67,14 @@ impl ChatPane {
         );
         mode.set_active_name(Some("sparring"));
 
+        let config_banner = adw::Banner::builder()
+            .title("No model configured")
+            .button_label("Preferences")
+            .build();
+        config_banner.connect_button_clicked(|banner| {
+            let _ = banner.activate_action("win.preferences", None);
+        });
+
         let selection_label = gtk::Label::builder()
             .label(NO_SELECTION)
             .xalign(0.0)
@@ -70,11 +88,20 @@ impl ChatPane {
             .valign(gtk::Align::Start)
             .css_classes(["boxed-list-separate"])
             .build();
+        list.update_property(&[gtk::accessible::Property::Label("Conversation")]);
         let messages = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .child(&list)
             .build();
+        let empty_state = adw::StatusPage::builder()
+            .icon_name("chat-message-new-symbolic")
+            .vexpand(true)
+            .css_classes(["compact"])
+            .build();
+        let stack = gtk::Stack::builder().vexpand(true).build();
+        stack.add_named(&empty_state, Some("empty"));
+        stack.add_named(&messages, Some("messages"));
 
         let input = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -84,6 +111,10 @@ impl ChatPane {
             .left_margin(8)
             .right_margin(8)
             .build();
+        input.update_property(&[gtk::accessible::Property::Label("Message to the LLM")]);
+        input.update_relation(&[gtk::accessible::Relation::DescribedBy(&[
+            selection_label.upcast_ref()
+        ])]);
         let placeholder = gtk::Label::builder()
             .xalign(0.0)
             .yalign(0.0)
@@ -113,15 +144,28 @@ impl ChatPane {
             .css_classes(["dim-label"])
             .build();
         let send_button = gtk::Button::builder()
-            .label("Send")
+            .label("_Send")
+            .use_underline(true)
             .sensitive(false)
             .css_classes(["suggested-action"])
             .build();
-        let new_conversation = gtk::Button::with_label("New conversation");
+        let stop_button = gtk::Button::builder()
+            .label("_Stop")
+            .use_underline(true)
+            .visible(false)
+            .tooltip_text("Abandon the request and keep the message")
+            .css_classes(["destructive-action"])
+            .build();
+        let new_conversation = gtk::Button::builder()
+            .label("New _Conversation")
+            .use_underline(true)
+            .tooltip_text("Forget the conversation so far")
+            .build();
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         bottom.append(&new_conversation);
         bottom.append(&spinner);
         bottom.append(&busy_label);
+        bottom.append(&stop_button);
         bottom.append(&send_button);
 
         let root = gtk::Box::builder()
@@ -133,7 +177,8 @@ impl ChatPane {
             .margin_end(12)
             .build();
         root.append(&mode);
-        root.append(&messages);
+        root.append(&config_banner);
+        root.append(&stack);
         root.append(&selection_label);
         root.append(&input_scroller);
         root.append(&bottom);
@@ -141,8 +186,13 @@ impl ChatPane {
         let pane = Rc::new(Self {
             root,
             editor,
+            toasts,
             conversation: RefCell::new(Conversation::default()),
             mode: Cell::new(Mode::Sparring),
+            config_banner,
+            empty_state,
+            stack,
+            messages,
             selection_label,
             list,
             rendered: RefCell::new(Vec::new()),
@@ -150,10 +200,13 @@ impl ChatPane {
             input,
             placeholder,
             send_button,
+            stop_button,
             spinner,
             busy_label,
         });
-        pane.update_placeholder();
+        pane.set_mode(Mode::Sparring);
+        pane.refresh_config();
+        pane.render();
 
         mode.connect_active_name_notify(glib::clone!(
             #[weak]
@@ -179,6 +232,11 @@ impl ChatPane {
             pane,
             move |_| pane.send()
         ));
+        pane.stop_button.connect_clicked(glib::clone!(
+            #[weak]
+            pane,
+            move |_| pane.cancel()
+        ));
         pane.input.buffer().connect_changed(glib::clone!(
             #[weak]
             pane,
@@ -194,7 +252,7 @@ impl ChatPane {
             pane,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, key, _, state| {
+            move |controller, key, _, state| {
                 let enter = matches!(
                     key,
                     gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter
@@ -203,13 +261,20 @@ impl ChatPane {
                     // Shift+Enter falls through to the text view, which inserts a newline.
                     return glib::Propagation::Proceed;
                 }
-                pane.send();
+                // An input method that is composing text gets Enter first, to commit the
+                // composition; only an Enter it does not use sends the message.
+                let composing = controller
+                    .current_event()
+                    .is_some_and(|event| pane.input.im_context_filter_keypress(&event));
+                if !composing {
+                    pane.send();
+                }
                 glib::Propagation::Stop
             }
         ));
         pane.input.add_controller(keys);
 
-        messages.vadjustment().connect_changed(glib::clone!(
+        pane.messages.vadjustment().connect_changed(glib::clone!(
             #[weak]
             pane,
             move |adjustment| {
@@ -241,8 +306,34 @@ impl ChatPane {
         &self.root
     }
 
+    /// Shows or hides the banner asking for a model, after the settings may have changed.
+    pub fn refresh_config(&self) {
+        let (revealed, title) = match Config::load() {
+            Ok(config) if config.model.is_some() => (false, "No model configured"),
+            Ok(_) => (true, "No model configured"),
+            Err(_) => (true, "The settings could not be read"),
+        };
+        self.config_banner.set_title(title);
+        self.config_banner.set_revealed(revealed);
+    }
+
     fn set_mode(&self, mode: Mode) {
         self.mode.set(mode);
+        let (title, description) = match mode {
+            Mode::Sparring => (
+                "Sparring",
+                "The LLM reads the document and critiques it, but cannot change it. Highlight a \
+                 passage in the editor to focus on it, or leave nothing selected to discuss the \
+                 whole document.",
+            ),
+            Mode::Ghostwriting => (
+                "Ghostwriting",
+                "The LLM proposes a change that you can apply or reject. Highlight the passage \
+                 to change, or leave nothing selected for the whole document.",
+            ),
+        };
+        self.empty_state.set_title(title);
+        self.empty_state.set_description(Some(description));
         self.update_placeholder();
     }
 
@@ -260,7 +351,7 @@ impl ChatPane {
             mode,
             &self.editor.text(),
             Some(&selection),
-            self.conversation.borrow().history(),
+            &self.conversation.borrow().history(),
             user_input,
         );
         let Some(ticket) = self
@@ -273,17 +364,15 @@ impl ChatPane {
         buffer.set_text("");
         self.render();
 
-        let reply = gio::spawn_blocking(move || {
-            Config::load()
-                .map_err(LlmError::Config)
-                .and_then(|config| llm::complete(&config, &messages))
-                .map_err(|e| e.to_string())
-        });
         let pane = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = reply
-                .await
-                .unwrap_or_else(|_| Err(WORKER_FAILED.to_string()));
+            let result = run_blocking(move || {
+                Config::load()
+                    .map_err(LlmError::Config)
+                    .and_then(|config| llm::complete(&config, &messages))
+                    .map_err(|e| e.to_string())
+            })
+            .await;
             let Some(pane) = pane.upgrade() else {
                 return;
             };
@@ -297,6 +386,15 @@ impl ChatPane {
         });
     }
 
+    /// Abandons the in-flight request and puts the message back into the input.
+    fn cancel(self: &Rc<Self>) {
+        let message = self.conversation.borrow_mut().cancel_request();
+        if let Some(message) = message {
+            self.input.buffer().set_text(&message);
+        }
+        self.render();
+    }
+
     fn apply(self: &Rc<Self>, index: usize) {
         let result = self
             .conversation
@@ -304,6 +402,16 @@ impl ChatPane {
             .apply_proposal(index, &self.editor.text());
         if let Ok(markdown) = result {
             self.editor.apply_markdown(&markdown);
+            let toast = adw::Toast::builder()
+                .title("Change applied")
+                .button_label("Undo")
+                .build();
+            toast.connect_button_clicked(glib::clone!(
+                #[weak(rename_to = pane)]
+                self,
+                move |_| pane.editor.buffer().undo()
+            ));
+            self.toasts.add_toast(toast);
         }
         self.render();
     }
@@ -313,46 +421,60 @@ impl ChatPane {
         self.render();
     }
 
-    /// Brings the message list and busy state in line with the conversation.
+    /// Brings the message list and busy state in line with the conversation. Rows are only
+    /// rebuilt for entries that changed; new rows scroll the list to the end unless the user
+    /// has scrolled up to read something, except for their own message.
     fn render(self: &Rc<Self>) {
-        let entries = self.conversation.borrow().entries().to_vec();
-        let mut rendered = self.rendered.borrow_mut();
-        if entries.len() < rendered.len() {
-            self.list.remove_all();
-            rendered.clear();
-        }
-        for (index, entry) in entries.iter().enumerate() {
-            match rendered.get(index) {
-                Some(shown) if shown == entry => {}
-                Some(_) => {
-                    let position = i32::try_from(index).expect("row index fits in i32");
-                    if let Some(row) = self.list.row_at_index(position) {
-                        self.list.remove(&row);
+        let mut rendered = self.rendered.take();
+        {
+            let conversation = self.conversation.borrow();
+            let entries = conversation.entries();
+            let adjustment = self.messages.vadjustment();
+            let at_bottom = adjustment.value() + adjustment.page_size() >= adjustment.upper() - 1.0;
+            if entries.len() < rendered.len() {
+                self.list.remove_all();
+                rendered.clear();
+            }
+            for (index, entry) in entries.iter().enumerate() {
+                match rendered.get(index) {
+                    Some(shown) if shown == entry => {}
+                    Some(_) => {
+                        let position = i32::try_from(index).expect("row index fits in i32");
+                        if let Some(row) = self.list.row_at_index(position) {
+                            self.list.remove(&row);
+                        }
+                        self.list.insert(&self.row(index, entry), position);
+                        rendered[index] = entry.clone();
                     }
-                    self.list.insert(&self.row(index, entry), position);
-                    rendered[index] = entry.clone();
-                }
-                None => {
-                    self.list.append(&self.row(index, entry));
-                    rendered.push(entry.clone());
-                    self.scroll_to_end.set(true);
+                    None => {
+                        self.list.append(&self.row(index, entry));
+                        rendered.push(entry.clone());
+                        if at_bottom || matches!(entry, Entry::User { .. }) {
+                            self.scroll_to_end.set(true);
+                        }
+                    }
                 }
             }
+            self.stack.set_visible_child_name(if entries.is_empty() {
+                "empty"
+            } else {
+                "messages"
+            });
         }
+        self.rendered.replace(rendered);
         let busy = self.conversation.borrow().is_busy();
         self.spinner.set_visible(busy);
         self.busy_label
             .set_text(if busy { "Waiting for the LLM…" } else { "" });
+        self.stop_button.set_visible(busy);
+        self.send_button.set_visible(!busy);
         self.update_send_button();
     }
 
     fn row(self: &Rc<Self>, index: usize, entry: &Entry) -> gtk::ListBoxRow {
         let (child, class): (gtk::Widget, &str) = match entry {
             Entry::User { text } => (text_label(text).upcast(), "chat-user"),
-            Entry::Assistant { text } => (
-                markup_label(&chat_markup::to_pango(text)).upcast(),
-                "chat-assistant",
-            ),
+            Entry::Assistant { text } => (markdown_label(text).upcast(), "chat-assistant"),
             Entry::Error { text } => {
                 let label = text_label(text);
                 label.add_css_class("error");
@@ -362,6 +484,7 @@ impl ChatPane {
                 explanation,
                 edits,
                 state,
+                ..
             } => (
                 self.proposal_card(index, explanation, edits, *state)
                     .upcast(),
@@ -390,13 +513,13 @@ impl ChatPane {
         let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
         card.append(
             &gtk::Label::builder()
-                .label("Proposed change")
+                .label("Proposed Change")
                 .xalign(0.0)
                 .css_classes(["heading"])
                 .build(),
         );
         if !explanation.is_empty() {
-            card.append(&markup_label(&chat_markup::to_pango(explanation)));
+            card.append(&markdown_label(explanation));
         }
         for (number, edit) in edits.iter().enumerate() {
             if edits.len() > 1 {
@@ -404,11 +527,14 @@ impl ChatPane {
                 heading.add_css_class("dim-label");
                 card.append(&heading);
             }
-            let original = markup_label(&format!("<s>{}</s>", chat_markup::escape(&edit.original)));
+            let original = markup_label(
+                &format!("<s>{}</s>", chat_markup::escape(&edit.original)),
+                &edit.original,
+            );
             original.add_css_class("edit-original");
             card.append(&original);
             let replacement = if edit.replacement.is_empty() {
-                markup_label("<i>(delete)</i>")
+                markup_label("<i>(delete)</i>", "(delete)")
             } else {
                 text_label(&edit.replacement)
             };
@@ -418,7 +544,8 @@ impl ChatPane {
         match state {
             ProposalState::Pending => {
                 let apply = gtk::Button::builder()
-                    .label("Apply")
+                    .label("_Apply")
+                    .use_underline(true)
                     .css_classes(["suggested-action"])
                     .build();
                 apply.connect_clicked(glib::clone!(
@@ -426,7 +553,10 @@ impl ChatPane {
                     self,
                     move |_| pane.apply(index)
                 ));
-                let reject = gtk::Button::with_label("Reject");
+                let reject = gtk::Button::builder()
+                    .label("_Reject")
+                    .use_underline(true)
+                    .build();
                 reject.connect_clicked(glib::clone!(
                     #[weak(rename_to = pane)]
                     self,
@@ -455,8 +585,7 @@ impl ChatPane {
         let text = if selection.trim().is_empty() {
             NO_SELECTION.to_string()
         } else {
-            let collapsed: Vec<&str> = selection.split_whitespace().collect();
-            format!("Selection: “{}”", collapsed.join(" "))
+            format!("Selection: “{}”", preview(&selection))
         };
         self.selection_label.set_text(&text);
     }
@@ -466,11 +595,12 @@ impl ChatPane {
             Mode::Sparring => "Ask about the text…",
             Mode::Ghostwriting => "Ask for a change…",
         };
-        self.placeholder.set_text(&format!(
-            "{hint} (Enter to send, Shift+Enter for a new line)"
-        ));
+        let placeholder = format!("{hint} (Enter to send, Shift+Enter for a new line)");
+        self.placeholder.set_text(&placeholder);
         self.placeholder
             .set_visible(self.input.buffer().char_count() == 0);
+        self.input
+            .update_property(&[gtk::accessible::Property::Placeholder(&placeholder)]);
     }
 
     fn update_send_button(&self) {
@@ -482,15 +612,47 @@ impl ChatPane {
     }
 }
 
+/// The first `SELECTION_PREVIEW_CHARS` characters of `text` with whitespace collapsed, plus an
+/// ellipsis if that cut anything off.
+fn preview(text: &str) -> String {
+    let mut out = String::with_capacity(SELECTION_PREVIEW_CHARS + 4);
+    let mut count = 0;
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+            count += 1;
+        }
+        for ch in word.chars() {
+            if count >= SELECTION_PREVIEW_CHARS {
+                out.push('…');
+                return out;
+            }
+            out.push(ch);
+            count += 1;
+        }
+    }
+    out
+}
+
 fn text_label(text: &str) -> gtk::Label {
     let label = base_label();
     label.set_text(text);
     label
 }
 
-fn markup_label(markup: &str) -> gtk::Label {
+/// A label showing `markdown` rendered, or as plain text should Pango reject the markup.
+fn markdown_label(markdown: &str) -> gtk::Label {
+    markup_label(&chat_markup::to_pango(markdown), markdown)
+}
+
+/// A label showing `markup`, falling back to `text` if Pango cannot parse the markup, so that a
+/// reply is never shown as an empty row.
+fn markup_label(markup: &str, text: &str) -> gtk::Label {
     let label = base_label();
-    label.set_markup(markup);
+    match pango::parse_markup(markup, '\0') {
+        Ok(_) => label.set_markup(markup),
+        Err(_) => label.set_text(text),
+    }
     label
 }
 
@@ -501,4 +663,18 @@ fn base_label() -> gtk::Label {
         .wrap_mode(pango::WrapMode::WordChar)
         .selectable(true)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_collapses_whitespace_and_cuts_long_text() {
+        assert_eq!(preview("  Some\n  example   text "), "Some example text");
+        let long = "word ".repeat(100);
+        let shown = preview(&long);
+        assert!(shown.ends_with('…'), "{shown}");
+        assert_eq!(shown.chars().count(), SELECTION_PREVIEW_CHARS + 1);
+    }
 }

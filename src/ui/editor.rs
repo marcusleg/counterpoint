@@ -1,27 +1,28 @@
 //! The Markdown source editor: a GtkSourceView that holds the exact file text.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::Cell;
 
 use gtk::gdk;
 use gtk::prelude::*;
 use sourceview5::prelude::*;
 
 use crate::text_diff;
+use crate::zoom;
 
-/// Source of the per-instance style class names below, so that two `EditorView`s never share one
-/// class and, through it, each other's zoom level.
-static NEXT_EDITOR_ID: AtomicU64 = AtomicU64::new(0);
+const ZOOM_CLASS_PREFIX: &str = "counterpoint-zoom-";
 
-/// Cheap to clone; clones share the same view, buffer, zoom style provider and class name.
+thread_local! {
+    /// Whether the zoom style sheet has been registered on the display. It has one rule per
+    /// zoom level (`.counterpoint-zoom-110 { font-size: 110%; }`), so every editor picks its
+    /// level by class and none needs a style provider of its own.
+    static ZOOM_STYLE_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Cheap to clone; clones share the same view and buffer.
 #[derive(Clone)]
 pub struct EditorView {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
-    /// Registered on the display once, in `new`; `set_zoom` only reloads its CSS.
-    zoom_style: gtk::CssProvider,
-    /// This instance's own style class (`counterpoint-editor-{n}`), so the zoom CSS provider only
-    /// styles this editor even though providers are registered display-wide.
-    zoom_class: String,
 }
 
 impl Default for EditorView {
@@ -32,6 +33,7 @@ impl Default for EditorView {
 
 impl EditorView {
     pub fn new() -> Self {
+        load_zoom_style();
         let buffer = sourceview5::Buffer::new(None);
         buffer.set_language(
             sourceview5::LanguageManager::default()
@@ -45,27 +47,9 @@ impl EditorView {
         view.set_right_margin(24);
         view.set_top_margin(16);
         view.set_bottom_margin(16);
-        let zoom_class = format!(
-            "counterpoint-editor-{}",
-            NEXT_EDITOR_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        view.add_css_class(&zoom_class);
-
-        let zoom_style = gtk::CssProvider::new();
-        if let Some(display) = gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &zoom_style,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-
-        Self {
-            view,
-            buffer,
-            zoom_style,
-            zoom_class,
-        }
+        view.upcast_ref::<gtk::Widget>()
+            .update_property(&[gtk::accessible::Property::Label("Document")]);
+        Self { view, buffer }
     }
 
     pub fn widget(&self) -> &sourceview5::View {
@@ -100,7 +84,8 @@ impl EditorView {
     }
 
     /// Changes the text to `markdown` as a single undo step, replacing only the span between the
-    /// first and the last differing character.
+    /// first and the last differing character. The new text is selected and scrolled into view,
+    /// so the change is visible even when it happened off screen.
     pub fn apply_markdown(&self, markdown: &str) {
         let Some(span) = text_diff::minimal_edit(&self.text(), markdown) else {
             return;
@@ -112,14 +97,22 @@ impl EditorView {
         self.buffer.delete(&mut start, &mut end);
         self.buffer.insert(&mut start, &span.replacement);
         self.buffer.end_user_action();
+        let inserted_end = start;
+        let inserted_start = self.buffer.iter_at_offset(offset(span.start));
+        self.buffer.select_range(&inserted_start, &inserted_end);
+        self.view.scroll_mark_onscreen(&self.buffer.get_insert());
     }
 
-    /// Scales the editor's font to `percent` of its default size.
+    /// Scales the editor's font to `percent` of its default size; `percent` must be one of the
+    /// levels in `zoom`.
     pub fn set_zoom(&self, percent: u32) {
-        self.zoom_style.load_from_string(&format!(
-            ".{} {{ font-size: {percent}%; }}",
-            self.zoom_class
-        ));
+        for class in self.view.css_classes() {
+            if class.starts_with(ZOOM_CLASS_PREFIX) {
+                self.view.remove_css_class(&class);
+            }
+        }
+        self.view
+            .add_css_class(&format!("{ZOOM_CLASS_PREFIX}{percent}"));
     }
 
     /// Uses the Adwaita style scheme matching `dark`.
@@ -131,4 +124,24 @@ impl EditorView {
                 .as_ref(),
         );
     }
+}
+
+fn load_zoom_style() {
+    if ZOOM_STYLE_LOADED.replace(true) {
+        return;
+    }
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let css: String = (zoom::MIN..=zoom::MAX)
+        .step_by(zoom::STEP as usize)
+        .map(|percent| format!(".{ZOOM_CLASS_PREFIX}{percent} {{ font-size: {percent}%; }}\n"))
+        .collect();
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(&css);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
