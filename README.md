@@ -105,8 +105,9 @@ git tag -a v0.1.0 -m "Counterpoint 0.1.0"
 git push origin v0.1.0
 ```
 
-The Claude Code skill in `.claude/skills/release/` walks through the whole process, including
-choosing the version and checking the build containers.
+The agent skill in `.agents/skills/release/` (linked into `.claude/skills/` for Claude Code)
+walks through the whole process, including choosing the version and checking the build
+containers.
 
 `.github/workflows/release.yml` then builds the Flatpak bundle (from
 `build-aux/de.marcusleg.Counterpoint.yml`, in Flathub's GNOME 51 build container) and the RPM
