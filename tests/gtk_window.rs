@@ -1,76 +1,81 @@
-//! GTK checks for the main window built through the public API: the chat input enabling Send,
-//! the mode toggle, the selection chip, the editor placeholder, the primary menu and the zoom
-//! controls. GTK must run on the thread that initialised it and only one `gtk::Application` may
-//! run per process, so this test builds the real window inside `connect_activate`, drives it
-//! with `glib::idle_add_local_once` once it is realized, and quits the application afterwards.
-//! It needs a display; `dev/headless.sh cargo test` provides a private one and sets
-//! `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead of skipping silently.
+//! GTK checks for the main window built through the public API: the chat pane, the primary menu
+//! and zoom controls, the unsaved-changes and file dialogs, saving, and a chat round trip against
+//! a mock endpoint. GTK must run on the thread that initialised it and only one
+//! `gtk::Application` may run per process, so this test builds the real window inside
+//! `connect_activate`, drives it with `glib::idle_add_local_once` once it is realized, and quits
+//! the application afterwards. It needs a display; `dev/headless.sh cargo test` provides a
+//! private one and sets `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead
+//! of skipping silently.
+
+mod common;
 
 use std::cell::RefCell;
+use std::fs;
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::time::{Duration, SystemTime};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use common::{find_alert, find_button, find_label, pump, pump_until, widgets_under, Checks};
+use counterpoint::config::Config;
 use counterpoint::state::{self, State};
 use counterpoint::ui::window::MainWindow;
 
 const NO_SELECTION: &str = "No selection — whole document";
 const EMPTY_EDITOR_HINT: &str = "Open a Markdown file or start writing…";
-
-#[derive(Default)]
-struct Checks {
-    failures: usize,
-    passed: usize,
-}
-
-impl Checks {
-    fn check(&mut self, ok: bool, what: &str) {
-        if ok {
-            self.passed += 1;
-        } else {
-            self.failures += 1;
-            println!("FAIL: {what}");
-        }
-    }
-}
+const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+const DIALOG_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     // Safe: the process is still single-threaded here, before `gtk::init()` below can start any
     // GTK-owned threads. A fresh temp directory keeps this test from ever touching the user's
-    // real state file; it stays alive for the whole test (dropped, and cleaned up, on return).
-    let state_dir = tempfile::tempdir().expect("temp dir for XDG_STATE_HOME");
+    // real state and settings files; it stays alive for the whole test.
+    let home = tempfile::tempdir().expect("temp dir for XDG_STATE_HOME and XDG_CONFIG_HOME");
     unsafe {
-        std::env::set_var("XDG_STATE_HOME", state_dir.path());
+        std::env::set_var("XDG_STATE_HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path());
     }
 
-    if gtk::init().is_err() {
-        if std::env::var_os("COUNTERPOINT_REQUIRE_DISPLAY").is_some() {
-            println!("FAIL: no display although COUNTERPOINT_REQUIRE_DISPLAY is set");
-            return ExitCode::FAILURE;
-        }
-        println!("SKIPPED: no display");
-        return ExitCode::SUCCESS;
+    if let Err(code) = common::init_or_skip() {
+        return code;
     }
 
     let app = adw::Application::builder()
         .application_id("de.marcusleg.Counterpoint.Test")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    app.connect_startup(|_| sourceview5::init());
 
     let checks = Rc::new(RefCell::new(Checks::default()));
+    let work_dir = home.path().join("work");
+    fs::create_dir_all(&work_dir).unwrap();
     app.connect_activate(glib::clone!(
         #[strong]
         checks,
+        #[strong]
+        work_dir,
         move |app| {
             let window = MainWindow::new(app);
             window.present();
             let checks = Rc::clone(&checks);
             let app = app.clone();
+            let work_dir = work_dir.clone();
             glib::idle_add_local_once(move || {
-                run_checks(&app, &mut checks.borrow_mut());
+                let mut checks = checks.borrow_mut();
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    run_checks(&app, &window, &work_dir, &mut checks)
+                }));
+                if let Err(payload) = result {
+                    let message = payload
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".to_string());
+                    checks.fail(&format!("the checks panicked: {message}"));
+                }
                 app.quit();
             });
         }
@@ -78,22 +83,7 @@ fn main() -> ExitCode {
     app.run_with_args::<&str>(&[]);
 
     let checks = checks.borrow();
-    println!("{} passed, {} failed", checks.passed, checks.failures);
-    if checks.failures == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
-/// Appends `widget` and every descendant, in tree order, to `out`.
-fn collect_widgets(widget: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
-    out.push(widget.clone());
-    let mut child = widget.first_child();
-    while let Some(c) = child {
-        collect_widgets(&c, out);
-        child = c.next_sibling();
-    }
+    checks.finish()
 }
 
 /// The labels of every item in every "section" link of `model`, in order.
@@ -112,15 +102,23 @@ fn menu_labels(model: &gio::MenuModel) -> Vec<String> {
     labels
 }
 
-fn run_checks(app: &adw::Application, checks: &mut Checks) {
+/// The rows of the chat list with the given CSS class.
+fn chat_rows(root: &gtk::Widget, class: &str) -> Vec<gtk::ListBoxRow> {
+    widgets_under(root)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::ListBoxRow>().ok())
+        .filter(|row| row.has_css_class(class))
+        .collect()
+}
+
+fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, checks: &mut Checks) {
     let window = app.active_window().expect("the window is presented");
     let app_window = window
         .clone()
         .downcast::<adw::ApplicationWindow>()
         .expect("the active window is an AdwApplicationWindow");
     let root = window.clone().upcast::<gtk::Widget>();
-    let mut widgets = Vec::new();
-    collect_widgets(&root, &mut widgets);
+    let widgets = widgets_under(&root);
 
     // The chat input is a plain `gtk::TextView`; an exact type check excludes the
     // `sourceview5::View` editor, which is also a `gtk::TextView` subclass.
@@ -131,24 +129,10 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         .clone()
         .downcast::<gtk::TextView>()
         .expect("chat input is a gtk::TextView");
-    let send = widgets
-        .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Button>())
-        .find(|b| b.label().as_deref() == Some("Send"))
-        .expect("Send button")
-        .clone();
-    let placeholder = widgets
-        .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Label>())
-        .find(|l| l.text().starts_with("Ask "))
-        .expect("chat input placeholder")
-        .clone();
-    let chip = widgets
-        .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Label>())
-        .find(|l| l.text() == NO_SELECTION)
-        .expect("selection chip")
-        .clone();
+    let send = find_button(&root, "_Send").expect("Send button");
+    let stop = find_button(&root, "_Stop").expect("Stop button");
+    let placeholder = find_label(&root, |t| t.starts_with("Ask ")).expect("chat input placeholder");
+    let chip = find_label(&root, |t| t == NO_SELECTION).expect("selection chip");
     let editor = widgets
         .iter()
         .find_map(|w| w.downcast_ref::<sourceview5::View>())
@@ -159,17 +143,43 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         .find_map(|w| w.downcast_ref::<adw::ToggleGroup>())
         .expect("mode toggle")
         .clone();
-    let editor_placeholder = widgets
+    let editor_placeholder =
+        find_label(&root, |t| t == EMPTY_EDITOR_HINT).expect("editor placeholder");
+    let banner = widgets
         .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Label>())
-        .find(|l| l.text() == EMPTY_EDITOR_HINT)
-        .expect("editor placeholder")
+        .find_map(|w| w.downcast_ref::<adw::Banner>())
+        .expect("config banner")
+        .clone();
+    let empty_state = widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::StatusPage>())
+        .expect("chat empty state")
+        .clone();
+    let split = widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::OverlaySplitView>())
+        .expect("split view")
         .clone();
 
     checks.check(!send.is_sensitive(), "Send starts insensitive");
+    checks.check(!stop.is_visible(), "Stop is hidden while idle");
     checks.check(
         editor_placeholder.is_visible(),
         "the editor placeholder is visible for the empty editor",
+    );
+    checks.check(
+        banner.is_revealed() && banner.title() == "No model configured",
+        "without settings, the chat pane asks for a model",
+    );
+    checks.check(
+        empty_state.is_mapped() && empty_state.title() == "Sparring",
+        "an empty conversation shows the Sparring empty state",
+    );
+    checks.check(
+        empty_state
+            .description()
+            .is_some_and(|d| d.contains("Highlight")),
+        "the empty state explains highlighting",
     );
 
     input.buffer().set_text("Hello");
@@ -188,9 +198,14 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         "the placeholder switches with the mode",
     );
     checks.check(
+        empty_state.title() == "Ghostwriting",
+        "the empty state switches with the mode",
+    );
+    checks.check(
         mode.ancestor(adw::HeaderBar::static_type()).is_none(),
         "the mode toggle lives in the chat pane, not the header bar",
     );
+    mode.set_active_name(Some("sparring"));
 
     let buffer = editor.buffer();
     buffer.set_text("Some example text.");
@@ -206,13 +221,53 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         "the selection chip shows the trimmed selection",
     );
 
+    header_bar_and_menu(checks, &root, &widgets);
+    zoom(checks, &window, &app_window, &root);
+
+    checks.check(split.shows_sidebar(), "the chat is shown at first");
+    window
+        .activate_action("win.toggle-chat", None)
+        .expect("win.toggle-chat exists");
+    checks.check(!split.shows_sidebar(), "toggle-chat hides the chat");
+    window
+        .activate_action("win.toggle-chat", None)
+        .expect("win.toggle-chat exists");
+    checks.check(split.shows_sidebar(), "toggle-chat shows the chat again");
+
+    new_document(checks, &window, &root, &buffer);
+    unsaved_changes_dialog(checks, &window, &root, &buffer);
+    files(checks, main, &window, &root, &buffer, work_dir);
+    chat(
+        checks, &window, &root, &input, &send, &stop, &mode, &buffer, &banner,
+    );
+
+    let second = MainWindow::new(app);
+    let second_window = app
+        .windows()
+        .into_iter()
+        .find(|w| *w != window)
+        .expect("a second window was created");
+    let second_zoom_label = find_button(&second_window, "110%");
+    checks.check(
+        second_zoom_label.is_some(),
+        "a new window starts at the persisted zoom level",
+    );
+    drop(second);
+    second_window.destroy();
+}
+
+fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::Widget]) {
     let menu_button = widgets
         .iter()
         .filter_map(|w| w.downcast_ref::<gtk::MenuButton>())
         .find(|b| b.icon_name().as_deref() == Some("open-menu-symbolic"))
         .expect("primary menu button")
         .clone();
-    let menu_model = menu_button.menu_model().expect("primary menu has a model");
+    let popover = menu_button
+        .popover()
+        .and_downcast::<gtk::PopoverMenu>()
+        .expect("the primary menu is a popover menu");
+    let menu_model = popover.menu_model().expect("primary menu has a model");
     let expected_labels = [
         "_New".to_string(),
         "_Open…".to_string(),
@@ -230,39 +285,51 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
     let zoom_box = widgets
         .iter()
         .filter_map(|w| w.downcast_ref::<gtk::Box>())
-        .find(|b| b.css_classes().iter().any(|class| class == "linked"))
+        .find(|b| b.has_css_class("zoom-controls"))
         .expect("zoom controls box")
         .clone();
     checks.check(
-        zoom_box.ancestor(adw::HeaderBar::static_type()).is_some(),
-        "the zoom controls live inside the header bar",
+        zoom_box.ancestor(gtk::PopoverMenu::static_type()).is_some(),
+        "the zoom controls live inside the primary menu",
     );
+
+    let open = find_button(root, "_Open…").expect("Open button");
     let title_widget = widgets
         .iter()
         .find(|w| w.type_() == adw::WindowTitle::static_type())
         .expect("window title")
         .clone();
-    let zoom_widget = zoom_box.upcast::<gtk::Widget>();
-    let menu_widget = menu_button.upcast::<gtk::Widget>();
-    let zoom_index = widgets.iter().position(|w| *w == zoom_widget);
-    let title_index = widgets.iter().position(|w| *w == title_widget);
-    let menu_index = widgets.iter().position(|w| *w == menu_widget);
-    checks.check(
-        zoom_index.is_some()
-            && title_index.is_some()
-            && menu_index.is_some()
-            && zoom_index < title_index
-            && title_index < menu_index,
-        "the zoom controls are packed at the header bar's start, before the window title and \
-         before the primary menu",
-    );
-
-    let zoom_label = widgets
+    let chat_toggle = widgets
         .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Button>())
-        .find(|b| b.label().as_deref().is_some_and(|l| l.ends_with('%')))
-        .expect("zoom label button")
+        .filter_map(|w| w.downcast_ref::<gtk::ToggleButton>())
+        .find(|b| b.icon_name().as_deref() == Some("sidebar-show-right-symbolic"))
+        .expect("chat toggle button")
         .clone();
+    let position = |widget: &gtk::Widget| widgets.iter().position(|w| w == widget);
+    let open_index = position(open.upcast_ref());
+    let title_index = position(&title_widget);
+    let toggle_index = position(chat_toggle.upcast_ref());
+    let menu_index = position(menu_button.upcast_ref());
+    checks.check(
+        open.ancestor(adw::HeaderBar::static_type()).is_some()
+            && open_index < title_index
+            && title_index < toggle_index
+            && toggle_index < menu_index,
+        "the header bar packs Open at the start and the chat toggle before the primary menu",
+    );
+    checks.check(
+        chat_toggle.is_active(),
+        "the chat toggle reflects the shown chat pane",
+    );
+}
+
+fn zoom(
+    checks: &mut Checks,
+    window: &gtk::Window,
+    app_window: &adw::ApplicationWindow,
+    root: &gtk::Widget,
+) {
+    let zoom_label = find_button(root, "100%").expect("zoom label button");
     checks.check(
         zoom_label.label().as_deref() == Some("100%"),
         "zoom starts at 100%",
@@ -306,10 +373,6 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         .activate_action("win.zoom-reset", None)
         .expect("win.zoom-reset exists");
     checks.check(
-        zoom_label.label().as_deref() == Some("100%"),
-        "zoom-reset returns to 100% again",
-    );
-    checks.check(
         zoom_out_action.is_enabled(),
         "zoom-out re-enables once away from the minimum",
     );
@@ -326,55 +389,482 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         State::load_from(&state_path).zoom == Some(110),
         "the zoom level is persisted to the state file",
     );
+}
 
-    // win.new: the unsaved-changes guard sees an unmodified buffer here, so it proceeds without
-    // an alert. The buffer already holds "Some example text." from the checks above.
+fn new_document(
+    checks: &mut Checks,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+) {
+    // The unsaved-changes guard sees an unmodified buffer here, so it proceeds without an alert.
     buffer.set_modified(false);
     window
         .activate_action("win.new", None)
         .expect("win.new exists");
-    let main_context = glib::MainContext::default();
-    for _ in 0..200 {
-        if buffer.char_count() == 0 {
-            break;
-        }
-        main_context.iteration(true);
-    }
-    checks.check(buffer.char_count() == 0, "win.new empties the editor");
+    pump_until(checks, "win.new empties the editor", DIALOG_TIMEOUT, || {
+        buffer.char_count() == 0
+    });
     checks.check(
         !buffer.is_modified(),
         "win.new leaves the buffer unmodified",
     );
     checks.check(!buffer.can_undo(), "win.new leaves nothing to undo");
-    let window_title = title_widget
-        .clone()
-        .downcast::<adw::WindowTitle>()
+    let title = widgets_under(root)
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::WindowTitle>().ok())
         .expect("window title widget");
     checks.check(
-        window_title.title() == "Untitled",
+        title.title() == "Untitled",
         "win.new resets the title to \"Untitled\"",
     );
+}
 
-    let second = MainWindow::new(app);
-    let second_window = app
-        .windows()
-        .into_iter()
-        .find(|w| *w != window)
-        .expect("a second window was created");
-    let mut second_widgets = Vec::new();
-    collect_widgets(
-        &second_window.clone().upcast::<gtk::Widget>(),
-        &mut second_widgets,
-    );
-    let second_zoom_label = second_widgets
-        .iter()
-        .filter_map(|w| w.downcast_ref::<gtk::Button>())
-        .find(|b| b.label().as_deref().is_some_and(|l| l.ends_with('%')))
-        .expect("second window's zoom label button");
+fn unsaved_changes_dialog(
+    checks: &mut Checks,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+) {
+    buffer.set_text("Unsaved work.");
+    buffer.set_modified(true);
+    window
+        .activate_action("win.new", None)
+        .expect("win.new exists");
+    if !pump_until(
+        checks,
+        "win.new on a modified document asks",
+        DIALOG_TIMEOUT,
+        || find_alert(root).is_some(),
+    ) {
+        return;
+    }
+    let alert = find_alert(root).unwrap();
     checks.check(
-        second_zoom_label.label().as_deref() == Some("110%"),
-        "a new window starts at the persisted zoom level",
+        alert.heading().as_deref() == Some("Save Changes?"),
+        "the alert heading follows the HIG",
     );
-    drop(second);
-    second_window.destroy();
+    checks.check(
+        alert.body().contains("“Untitled”"),
+        "the alert names the document",
+    );
+    // Asking twice while the alert is open must not open a second alert.
+    window
+        .activate_action("win.new", None)
+        .expect("win.new exists");
+    pump();
+    let alerts = widgets_under(root)
+        .into_iter()
+        .filter(|w| w.is::<adw::AlertDialog>())
+        .count();
+    checks.check(alerts == 1, "a second request waits for the open alert");
+
+    find_button(&alert, "_Cancel")
+        .expect("Cancel response")
+        .emit_clicked();
+    pump_until(checks, "Cancel closes the alert", DIALOG_TIMEOUT, || {
+        find_alert(root).is_none()
+    });
+    checks.check(
+        buffer.is_modified() && buffer.char_count() > 0,
+        "Cancel keeps the document",
+    );
+
+    window
+        .activate_action("win.new", None)
+        .expect("win.new exists");
+    pump_until(checks, "win.new asks again", DIALOG_TIMEOUT, || {
+        find_alert(root).is_some()
+    });
+    if let Some(alert) = find_alert(root) {
+        find_button(&alert, "_Discard")
+            .expect("Discard response")
+            .emit_clicked();
+    }
+    pump_until(
+        checks,
+        "Discard starts a new document",
+        DIALOG_TIMEOUT,
+        || buffer.char_count() == 0 && !buffer.is_modified(),
+    );
+}
+
+fn files(
+    checks: &mut Checks,
+    main: &Rc<MainWindow>,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+    work_dir: &Path,
+) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/crlf.md");
+    let path = work_dir.join("crlf.md");
+    fs::copy(&fixture, &path).unwrap();
+
+    checks.check(main.load_path(&path).is_ok(), "load_path opens a file");
+    let title = widgets_under(root)
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::WindowTitle>().ok())
+        .expect("window title widget");
+    checks.check(title.title() == "crlf.md", "the title shows the file name");
+    checks.check(
+        title.subtitle() == work_dir.display().to_string(),
+        "the subtitle shows the folder",
+    );
+    checks.check(
+        !buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .contains('\r'),
+        "CRLF files are edited with LF",
+    );
+    let state_path = state::state_path().unwrap();
+    checks.check(
+        State::load_from(&state_path).last_folder.as_deref() == Some(work_dir),
+        "opening a file remembers its folder",
+    );
+
+    let end = buffer.end_iter();
+    buffer.insert(&mut end.clone(), "Added line\n");
+    checks.check(buffer.is_modified(), "typing marks the document modified");
+    checks.check(
+        title.title() == "• crlf.md",
+        "the title carries the modified marker",
+    );
+    window
+        .activate_action("win.save", None)
+        .expect("win.save exists");
+    pump_until(checks, "win.save writes the file", DIALOG_TIMEOUT, || {
+        !buffer.is_modified()
+    });
+    let saved = fs::read(&path).unwrap();
+    let text = String::from_utf8(saved).unwrap();
+    checks.check(
+        text.ends_with("Added line\r\n") && !text.replace("\r\n", "").contains('\n'),
+        "the saved file keeps CRLF line endings throughout",
+    );
+
+    // Another program changes the file: saving must ask before overwriting it.
+    fs::write(&path, "changed elsewhere\r\n").unwrap();
+    let file = fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(SystemTime::now() + Duration::from_secs(30))
+        .unwrap();
+    drop(file);
+    buffer.insert(&mut buffer.end_iter(), "More\n");
+    window
+        .activate_action("win.save", None)
+        .expect("win.save exists");
+    if pump_until(
+        checks,
+        "saving over a changed file asks",
+        DIALOG_TIMEOUT,
+        || find_alert(root).is_some(),
+    ) {
+        let alert = find_alert(root).unwrap();
+        checks.check(
+            alert.heading().as_deref() == Some("Overwrite Changed File?"),
+            "the alert explains the file changed on disk",
+        );
+        find_button(&alert, "_Cancel").unwrap().emit_clicked();
+        pump_until(
+            checks,
+            "Cancel closes the overwrite alert",
+            DIALOG_TIMEOUT,
+            || find_alert(root).is_none(),
+        );
+        checks.check(
+            buffer.is_modified() && fs::read_to_string(&path).unwrap() == "changed elsewhere\r\n",
+            "Cancel leaves the file on disk alone",
+        );
+        window
+            .activate_action("win.save", None)
+            .expect("win.save exists");
+        pump_until(checks, "saving asks again", DIALOG_TIMEOUT, || {
+            find_alert(root).is_some()
+        });
+        if let Some(alert) = find_alert(root) {
+            find_button(&alert, "_Overwrite").unwrap().emit_clicked();
+        }
+        pump_until(
+            checks,
+            "Overwrite saves the document",
+            DIALOG_TIMEOUT,
+            || !buffer.is_modified(),
+        );
+        checks.check(
+            fs::read_to_string(&path).unwrap().ends_with("More\r\n"),
+            "Overwrite writes the document",
+        );
+    }
+
+    // A failing save reports the error and keeps the document modified.
+    #[cfg(unix)]
+    if std::env::var("USER") != Ok("root".to_string()) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(work_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let read_only = fs::write(work_dir.join(".probe"), "x").is_err();
+        if read_only {
+            buffer.insert(&mut buffer.end_iter(), "Again\n");
+            window
+                .activate_action("win.save", None)
+                .expect("win.save exists");
+            if pump_until(
+                checks,
+                "a failing save shows an alert",
+                DIALOG_TIMEOUT,
+                || find_alert(root).is_some(),
+            ) {
+                let alert = find_alert(root).unwrap();
+                checks.check(
+                    alert.heading().as_deref() == Some("Could Not Save File"),
+                    "the alert names the failure",
+                );
+                checks.check(
+                    buffer.is_modified(),
+                    "a failed save keeps the document modified",
+                );
+                find_button(&alert, "_OK").unwrap().emit_clicked();
+                pump_until(checks, "OK closes the alert", DIALOG_TIMEOUT, || {
+                    find_alert(root).is_none()
+                });
+            }
+        }
+        fs::set_permissions(work_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_file(work_dir.join(".probe"));
+    }
+
+    checks.check(
+        main.load_path(&work_dir.join("missing.md")).is_err(),
+        "load_path reports a missing file",
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chat(
+    checks: &mut Checks,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    input: &gtk::TextView,
+    send: &gtk::Button,
+    stop: &gtk::Button,
+    mode: &adw::ToggleGroup,
+    buffer: &gtk::TextBuffer,
+    banner: &adw::Banner,
+) {
+    let mut server = mockito::Server::new();
+    let config = Config {
+        base_url: format!("{}/v1", server.url()),
+        api_key: None,
+        model: Some("test".to_string()),
+    };
+    config.save().expect("settings saved under XDG_CONFIG_HOME");
+    server
+        .mock("GET", "/v1/models")
+        .with_body(r#"{"data":[{"id":"test"}]}"#)
+        .create();
+
+    // The banner goes away once Preferences closes with a model configured.
+    window
+        .activate_action("win.preferences", None)
+        .expect("win.preferences exists");
+    pump();
+    let preferences = widgets_under(root)
+        .into_iter()
+        .filter_map(|w| w.downcast::<adw::Dialog>().ok())
+        .find(|d| d.title() == "Preferences");
+    checks.check(preferences.is_some(), "win.preferences opens the dialog");
+    if let Some(dialog) = preferences {
+        dialog.close();
+    }
+    pump_until(
+        checks,
+        "closing Preferences hides the banner",
+        DIALOG_TIMEOUT,
+        || !banner.is_revealed(),
+    );
+
+    buffer.set_text("# T\n\nOld text.\n");
+    buffer.set_modified(false);
+    let reply = |content: &str| {
+        serde_json::json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
+            .to_string()
+    };
+
+    // Sparring: a plain reply, rendered as Markdown.
+    let sparring = server
+        .mock("POST", "/v1/chat/completions")
+        .with_body(reply("*Hello* there"))
+        .create();
+    input.buffer().set_text("Thoughts?");
+    send.emit_clicked();
+    checks.check(
+        !send.is_visible() && stop.is_visible(),
+        "Send gives way to Stop while waiting",
+    );
+    checks.check(
+        find_label(root, |t| t == "Waiting for the LLM…").is_some(),
+        "the busy label shows while waiting",
+    );
+    checks.check(
+        chat_rows(root, "chat-user").len() == 1,
+        "the user's message appears at once",
+    );
+    pump_until(checks, "a sparring reply arrives", REPLY_TIMEOUT, || {
+        !chat_rows(root, "chat-assistant").is_empty()
+    });
+    let assistant = chat_rows(root, "chat-assistant");
+    let assistant_text = assistant
+        .first()
+        .and_then(|row| row.child())
+        .and_downcast::<gtk::Label>()
+        .map(|label| label.text().to_string());
+    checks.check(
+        assistant_text.as_deref() == Some("Hello there"),
+        &format!("the reply is rendered from Markdown, got {assistant_text:?}"),
+    );
+    checks.check(
+        send.is_visible() && !stop.is_visible(),
+        "Send comes back once the reply arrived",
+    );
+    sparring.remove();
+
+    // Ghostwriting: a proposal that applies as one undo step.
+    mode.set_active_name(Some("ghostwriting"));
+    let proposal = server
+        .mock("POST", "/v1/chat/completions")
+        .with_body(reply(
+            "Shorter.\n\n```original\nOld text.\n```\n```replacement\nNew text.\n```",
+        ))
+        .create();
+    input.buffer().set_text("Tighten it.");
+    send.emit_clicked();
+    pump_until(checks, "a proposal arrives", REPLY_TIMEOUT, || {
+        !chat_rows(root, "chat-proposal").is_empty()
+    });
+    let card = chat_rows(root, "chat-proposal");
+    let Some(card) = card.first() else {
+        return;
+    };
+    checks.check(
+        find_label(card, |t| t == "Proposed Change").is_some(),
+        "the proposal card has its heading",
+    );
+    find_button(card, "_Apply")
+        .expect("Apply button")
+        .emit_clicked();
+    pump();
+    checks.check(
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == "# T\n\nNew text.\n",
+        "Apply changes the document",
+    );
+    checks.check(
+        find_label(root, |t| t == "✓ Applied").is_some(),
+        "the card shows the proposal as applied",
+    );
+    buffer.undo();
+    checks.check(
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == "# T\n\nOld text.\n"
+            && !buffer.can_undo(),
+        "an applied proposal is one undo step",
+    );
+
+    // A stale proposal (the text changed) fails with an explanation and stays pending.
+    input.buffer().set_text("Again.");
+    send.emit_clicked();
+    pump_until(checks, "a second proposal arrives", REPLY_TIMEOUT, || {
+        chat_rows(root, "chat-proposal").len() == 2
+    });
+    buffer.set_text("Something else entirely.");
+    let cards = chat_rows(root, "chat-proposal");
+    if let Some(card) = cards.get(1) {
+        find_button(card, "_Apply")
+            .expect("Apply button")
+            .emit_clicked();
+        pump();
+        find_button(card, "_Apply")
+            .expect("Apply button")
+            .emit_clicked();
+        pump();
+    }
+    let errors = chat_rows(root, "chat-error");
+    let error_text = errors
+        .first()
+        .and_then(|row| row.child())
+        .and_downcast::<gtk::Label>()
+        .map(|l| l.text().to_string())
+        .unwrap_or_default();
+    checks.check(
+        errors.len() == 1 && error_text.contains("Edit 1") && error_text.contains("not found"),
+        &format!("a stale proposal explains itself once, got {error_text:?}"),
+    );
+    let cards = chat_rows(root, "chat-proposal");
+    checks.check(
+        cards
+            .get(1)
+            .is_some_and(|card| find_button(card, "_Reject").is_some()),
+        "a stale proposal stays pending",
+    );
+    if let Some(card) = cards.get(1) {
+        find_button(card, "_Reject").unwrap().emit_clicked();
+        pump();
+    }
+    checks.check(
+        find_label(root, |t| t == "✗ Rejected").is_some(),
+        "Reject marks the proposal rejected",
+    );
+    proposal.remove();
+
+    // An HTTP error becomes an error row and frees the input.
+    server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(500)
+        .with_body("boom")
+        .create();
+    input.buffer().set_text("Once more.");
+    send.emit_clicked();
+    pump_until(checks, "an HTTP error is reported", REPLY_TIMEOUT, || {
+        chat_rows(root, "chat-error").len() == 2
+    });
+    let error_text = chat_rows(root, "chat-error")
+        .get(1)
+        .and_then(|row| row.child())
+        .and_downcast::<gtk::Label>()
+        .map(|l| l.text().to_string())
+        .unwrap_or_default();
+    checks.check(
+        error_text.contains("HTTP 500") && error_text.contains("boom"),
+        &format!("the error row names the status, got {error_text:?}"),
+    );
+    checks.check(send.is_visible(), "Send is back after an error");
+
+    // Stop abandons a slow request and gives the message back.
+    server.reset();
+    server
+        .mock("POST", "/v1/chat/completions")
+        .with_chunked_body(|w| {
+            std::thread::sleep(Duration::from_millis(1500));
+            w.write_all(br#"{"choices":[{"message":{"content":"late"}}]}"#)
+        })
+        .create();
+    let rows_before = chat_rows(root, "chat-user").len();
+    input.buffer().set_text("Slow one");
+    send.emit_clicked();
+    pump();
+    checks.check(stop.is_visible(), "Stop shows for the slow request");
+    stop.emit_clicked();
+    pump();
+    let restored = input.buffer();
+    checks.check(
+        restored.text(&restored.start_iter(), &restored.end_iter(), false) == "Slow one",
+        "Stop puts the message back into the input",
+    );
+    checks.check(
+        chat_rows(root, "chat-user").len() == rows_before && send.is_visible(),
+        "Stop removes the pending message and frees the input",
+    );
+    std::thread::sleep(Duration::from_millis(1800));
+    pump();
+    checks.check(
+        chat_rows(root, "chat-assistant").len() == 1,
+        "the late reply of a stopped request is discarded",
+    );
 }
