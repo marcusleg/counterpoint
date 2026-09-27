@@ -134,17 +134,14 @@ input keys.
 
 ## Chat pane
 
-A vertical box with 12 px margins:
+A vertical box with 12 px margins, top to bottom:
 
-1. Top row: the selection chip (dimmed, ellipsized, single line) showing
-   `Selection: “…”` with runs of whitespace collapsed to a space, or
-   "No selection — whole document"; and a "New conversation" button at the end.
-2. Message list: `GtkScrolledWindow` → `GtkListBox` (selection mode none,
-   `boxed-list-separate` style). The pane keeps a clone of each rendered `Entry`. `sync()`
+1. Message list: `GtkScrolledWindow` → `GtkListBox` (selection mode none,
+   `boxed-list-separate` style). The pane keeps a clone of each rendered `Entry`. `render()`
    compares with `conversation.entries()`: if the conversation is shorter, it clears all rows;
    rows whose entry changed are replaced in place; new entries are appended and the list scrolls
    to the bottom. Applying an older proposal therefore does not move the list.
-3. Rows (all text selectable and wrapping, word-char):
+2. Rows (all text selectable and wrapping, word-char):
    - User: plain text on an accent-tinted card.
    - Assistant: `GtkLabel` with markup from `chat_markup::to_pango`; links open with the default
      handler.
@@ -153,25 +150,28 @@ A vertical box with 12 px margins:
      for each edit, "Edit n of m" (only when more than one), the original (struck through, red
      tint) and the replacement (green tint, or "(delete)" when empty); Apply (suggested) and
      Reject while pending, replaced by "✓ Applied" or "✗ Rejected" afterwards.
-4. Input: `GtkTextView` (word-char wrap) in a scrolled window that grows with its content up to
-   about 160 px, with a placeholder hint ("Ask about the text…" / "Ask for a change…", plus
-   "Enter to send, Shift+Enter for a new line"). An `EventControllerKey` in the capture phase:
-   Enter or Ctrl+Enter sends; Shift+Enter inserts `\n`.
-5. Bottom row: an `AdwSpinner` and "Waiting for the LLM…" while busy, and a Send button, disabled
-   while busy or when the input is blank.
+3. Selection chip, directly above the input it applies to (dimmed, ellipsized, single line):
+   `Selection: “…”` with runs of whitespace collapsed to a space, or
+   "No selection — whole document".
+4. Input: `GtkTextView` (word-char wrap) in a scrolled window between 64 and about 160 px high,
+   with a wrapping placeholder hint ("Ask about the text…" / "Ask for a change…", plus "(Enter to
+   send, Shift+Enter for a new line)"). An `EventControllerKey` in the capture phase: Enter or
+   Ctrl+Enter sends; Shift+Enter falls through to the text view, which inserts `\n`.
+5. Bottom row: a "New conversation" button, an `AdwSpinner` and "Waiting for the LLM…" while
+   busy, and a Send button, disabled while busy or when the input is blank.
 
 Sending: ignored if the trimmed input is empty or the conversation is busy.
 `prompt::build_messages(mode, document, selection, history, input)` →
-`conversation.begin_request(mode, input)` → the input is cleared and the pane synced →
+`conversation.begin_request(mode, input)` → the input is cleared and the pane re-rendered →
 `gio::spawn_blocking(Config::load + llm::complete)` awaited inside `glib::spawn_future_local` →
-`conversation.finish_request(ticket, result)`; if it returns true, `sync()`. A panic in the worker
+`conversation.finish_request(ticket, result)`; if it returns true, `render()`. A panic in the worker
 becomes `Err("The request failed unexpectedly.")`. New conversation calls `conversation.reset()`
-and `sync()`; the generation counter drops replies that arrive later.
+and `render()`; the generation counter drops replies that arrive later.
 
 Apply: `conversation.apply_proposal(index, &editor.text())`. On `Ok(markdown)` the window calls
 `editor.apply_markdown(&markdown)`; on `Err` the conversation has already added an error entry and
-the proposal stays pending. `sync()` in both cases. Reject: `conversation.reject_proposal(index)`
-and `sync()`.
+the proposal stays pending. `render()` in both cases. Reject: `conversation.reject_proposal(index)`
+and `render()`.
 
 ### Chat Markdown subset
 
@@ -256,7 +256,9 @@ One `main` runs every check in turn on the main thread:
 
 ### Headless runs
 
-`dev/headless.sh <command…>` starts `gtk4-broadwayd :5` in the background, runs the command with
+`dev/headless.sh <command…>` starts `gtk4-broadwayd --address 127.0.0.1 :5` in the background
+(its web viewer bound to loopback only), waits for its socket (`broadway6.socket` in
+`$XDG_RUNTIME_DIR` for display `:5`), runs the command with
 `GDK_BACKEND=broadway BROADWAY_DISPLAY=:5`, and stops the daemon afterwards. Used for `cargo test`
 and for a launch smoke test (start the binary, check stderr for GTK criticals or warnings, stop it
 after a few seconds). No windows are opened on the user's desktop without asking.
