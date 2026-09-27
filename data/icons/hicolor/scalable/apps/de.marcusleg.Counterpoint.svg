@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Placeholder icon: a page of text answered by a chat bubble. -->
+  <rect x="18" y="14" width="76" height="98" rx="8" fill="#c0bfbc"/>
+  <rect x="18" y="10" width="76" height="98" rx="8" fill="#f6f5f4"/>
+  <g fill="#9a9996">
+    <rect x="30" y="24" width="40" height="6" rx="3"/>
+    <rect x="30" y="38" width="52" height="4" rx="2"/>
+    <rect x="30" y="48" width="48" height="4" rx="2"/>
+    <rect x="30" y="58" width="52" height="4" rx="2"/>
+    <rect x="30" y="68" width="30" height="4" rx="2"/>
+  </g>
+  <path d="M66 70h42a10 10 0 0 1 10 10v20a10 10 0 0 1-10 10H92l-12 10v-10H66a10 10 0 0 1-10-10V80a10 10 0 0 1 10-10z" fill="#1a5fb4"/>
+  <path d="M66 66h42a10 10 0 0 1 10 10v20a10 10 0 0 1-10 10H92l-12 10v-10H66a10 10 0 0 1-10-10V76a10 10 0 0 1 10-10z" fill="#3584e4"/>
+  <g fill="#ffffff">
+    <circle cx="73" cy="86" r="5"/>
+    <circle cx="87" cy="86" r="5"/>
+    <circle cx="101" cy="86" r="5"/>
+  </g>
+</svg>

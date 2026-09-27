@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Counterpoint
+GenericName=Markdown Editor
+Comment=Write Markdown with an LLM sparring partner and ghostwriter
+Exec=counterpoint %F
+Icon=de.marcusleg.Counterpoint
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;
+Keywords=markdown;writing;blog;llm;ai;
+StartupNotify=true

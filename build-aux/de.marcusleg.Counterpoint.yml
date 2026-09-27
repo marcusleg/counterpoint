@@ -1,0 +1,40 @@
+# Flatpak manifest for the bundles attached to GitHub releases (.github/workflows/release.yml).
+# Cargo downloads the crates during the build, which Flathub would not allow; a Flathub
+# submission would need vendored sources (flatpak-cargo-generator) instead.
+id: de.marcusleg.Counterpoint
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: counterpoint
+finish-args:
+  # The LLM endpoint, including one on localhost such as Ollama.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # No filesystem access: files are opened and saved through the file chooser portal.
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: counterpoint
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/counterpoint/cargo
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/counterpoint -t /app/bin
+      - install -Dm644 data/de.marcusleg.Counterpoint.desktop -t /app/share/applications
+      - install -Dm644 data/de.marcusleg.Counterpoint.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 data/icons/hicolor/scalable/apps/de.marcusleg.Counterpoint.svg -t /app/share/icons/hicolor/scalable/apps
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - .flatpak-builder

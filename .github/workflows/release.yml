@@ -1,0 +1,92 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds a Flatpak bundle and an RPM and attaches both to a new
+# GitHub release. The tag must match the version in Cargo.toml. Running the workflow by hand
+# (Actions, Release, Run workflow) builds the packages as workflow artifacts without releasing.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+    # The image carries flatpak-builder and the GNOME runtime named in the manifest.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      # Builds counterpoint.flatpak and uploads it as the artifact counterpoint-x86_64.flatpak.
+      # The bundle names Flathub as its runtime source, so installing it fetches the runtime.
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: build-aux/de.marcusleg.Counterpoint.yml
+          bundle: counterpoint.flatpak
+
+  rpm:
+    runs-on: ubuntu-latest
+    # Supported are the current Fedora release and the one before it. Built on the older of the
+    # two, so the package installs on both; move this up when a new Fedora is released.
+    container: fedora:43
+    steps:
+      - name: Install GTK and a C compiler
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          gtk4-devel libadwaita-devel gtksourceview5-devel gcc
+
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.92
+
+      - run: cargo install --locked cargo-generate-rpm@0.21.0
+
+      - run: cargo build --release --locked
+
+      # Packages the files listed under [package.metadata.generate-rpm] in Cargo.toml.
+      - run: cargo generate-rpm
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: counterpoint-rpm
+          path: target/generate-rpm/*.rpm
+          if-no-files-found: error
+
+  release:
+    needs: [flatpak, rpm]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that the tag matches the version in Cargo.toml
+        run: |
+          version=$(cargo pkgid | sed 's/.*[#@]//')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # A version with a pre-release suffix, such as 0.2.0-rc.1, becomes a pre-release.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv dist/counterpoint.flatpak "dist/counterpoint-$VERSION-x86_64.flatpak"
+          prerelease=
+          case "$VERSION" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Counterpoint $VERSION" --generate-notes $prerelease

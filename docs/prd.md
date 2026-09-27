@@ -91,11 +91,20 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   instructions.
 - R26. Settings live in `$XDG_CONFIG_HOME/counterpoint/settings.json`; the last folder and zoom
   level in `$XDG_STATE_HOME/counterpoint/state.json`. Both files are readable only by the user.
+  In the Flatpak, these directories are under `~/.var/app/de.marcusleg.Counterpoint/`.
 
 ### Keyboard
 
 - R27. Shortcuts for New, Open, Save, Save As, chat pane, Preferences, shortcuts help, Quit,
   Undo, Redo, zoom and sending messages, as listed in the README.
+
+### Distribution
+
+- R28. Every GitHub release for a version tag carries an x86_64 Flatpak bundle on the GNOME
+  runtime, limited to network, display and GPU access with files going through the portals,
+  and an RPM for the current Fedora release and the one before it.
+- R29. Both packages install a desktop entry that offers to open Markdown files, AppStream
+  metainfo and an icon, all under the app ID `de.marcusleg.Counterpoint`.
 
 ## Quality requirements
 
