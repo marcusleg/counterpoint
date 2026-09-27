@@ -5,7 +5,8 @@ Sparring requests get a plain-text reply. Ghostwriting requests get a proposal t
 upper-cases the first two unique lines of the document, so multi-edit proposals
 can be tried out without a real model.
 
-Usage: python3 dev/mock_llm_server.py, then set Tools > Options… to base URL http://127.0.0.1:8765/v1 and model "mock".
+Usage: python3 dev/mock_llm_server.py, then set Options… in the main menu to base URL
+http://127.0.0.1:8765/v1 and model "mock".
 """
 
 import json
