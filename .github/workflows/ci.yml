@@ -1,24 +1,14 @@
 name: CI
 
 # Runs on pull requests and on main, not on pushes to other branches or tags, whose commits a
-# pull request or main already tests. Changes that cannot affect the checks below, such as
-# documentation, packaging or the release workflow, are skipped. dev/headless.sh and
-# dev/mock_llm_server.py are run by the tests; .gitattributes decides the fixtures' line endings.
+# pull request or main already tests. The workflow itself always runs, so that both jobs always
+# report a status and can be required checks on main; the changes job skips the check job for
+# changes that cannot affect it, such as documentation, packaging or the release workflow. A
+# skipped job counts as passed, so changes is required too: if it fails, check is skipped.
 on:
   push:
     branches: [main]
-    paths: &paths
-      - "src/**"
-      - "tests/**"
-      - "examples/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "dev/headless.sh"
-      - "dev/mock_llm_server.py"
-      - ".gitattributes"
-      - ".github/workflows/ci.yml"
   pull_request:
-    paths: *paths
   workflow_dispatch:
 
 # A new push to a pull request supersedes the run for its previous head.
@@ -27,7 +17,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # Pushes to main are compared with git against the commit before the push; pull
+      # requests are compared through the API.
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # dev/headless.sh and dev/mock_llm_server.py are run by the tests; .gitattributes
+          # decides the fixtures' line endings.
+          filters: |
+            code:
+              - "src/**"
+              - "tests/**"
+              - "examples/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "dev/headless.sh"
+              - "dev/mock_llm_server.py"
+              - ".gitattributes"
+              - ".github/workflows/ci.yml"
+
   check:
+    needs: changes
+    # A manual run always checks.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # Fedora ships GTK 4.18, libadwaita 1.8 and GtkSourceView 5.12, which the crates require.
     container: fedora:43
