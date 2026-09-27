@@ -29,8 +29,10 @@ pub struct MainWindow {
     zoom_label: gtk::Button,
     /// The editor's current zoom level.
     zoom: Cell<Zoom>,
-    /// The remembered folder and zoom level, loaded once and saved on every change.
+    /// The remembered folder, recent files and zoom level, loaded once and saved on every change.
     state: RefCell<State>,
+    /// The **Open Recent** submenu, rebuilt whenever the recent files change.
+    recent_menu: gio::Menu,
     /// The open file, or `None` for a new document.
     path: RefCell<Option<PathBuf>>,
     /// Line endings and byte order mark of the open file, restored on save.
@@ -123,7 +125,8 @@ impl MainWindow {
         zoom_box.append(&zoom_label);
         zoom_box.append(&zoom_in_button);
 
-        let menu_popover = gtk::PopoverMenu::from_model(Some(&primary_menu()));
+        let recent_menu = gio::Menu::new();
+        let menu_popover = gtk::PopoverMenu::from_model(Some(&primary_menu(&recent_menu)));
         menu_popover.add_child(&zoom_box, "zoom");
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -167,6 +170,7 @@ impl MainWindow {
             zoom_label,
             zoom: Cell::new(Zoom::default()),
             state: RefCell::new(state),
+            recent_menu,
             path: RefCell::new(None),
             format: Cell::new(DiskFormat::default()),
             modified_on_disk: Cell::new(None),
@@ -174,6 +178,7 @@ impl MainWindow {
             confirm_pending: Cell::new(false),
         });
         this.update_title();
+        this.update_recent_menu();
         this.follow_dark_mode();
         this.add_actions();
         this.apply_zoom(initial_zoom);
@@ -221,14 +226,14 @@ impl MainWindow {
     }
 
     /// Replaces the document with the file at `path`, with nothing to undo. Does not ask about
-    /// unsaved changes; `open_file` does.
+    /// unsaved changes; `open_file` does. A file that cannot be read leaves **Open Recent**.
     pub fn load_path(&self, path: &Path) -> Result<(), String> {
-        let contents = document::read_file(path)?;
+        let contents = document::read_file(path).inspect_err(|_| self.forget_recent(path))?;
         let (text, format) = document::from_disk(&contents);
         self.format.set(format);
         self.editor.load(&text);
         self.modified_on_disk.set(modification_time(path));
-        self.remember_folder(path);
+        self.remember_file(path);
         self.set_path(path.to_path_buf());
         Ok(())
     }
@@ -402,15 +407,45 @@ impl MainWindow {
         let _ = state.save();
     }
 
-    /// Persists `path`'s folder as the most recently used one, so **Open…** starts there next
-    /// time. Saving the state is a convenience, so a failure here must not interrupt the user.
-    fn remember_folder(&self, path: &Path) {
-        let Some(folder) = path.parent() else {
-            return;
-        };
-        let mut state = self.state.borrow_mut();
-        state.last_folder = Some(folder.to_path_buf());
-        let _ = state.save();
+    /// Persists `path` at the top of **Open Recent** and its folder as the most recently used
+    /// one, so **Open…** starts there next time. Saving the state is a convenience, so a failure
+    /// here must not interrupt the user.
+    fn remember_file(&self, path: &Path) {
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(folder) = path.parent() {
+                state.last_folder = Some(folder.to_path_buf());
+            }
+            state.add_recent(path);
+            let _ = state.save();
+        }
+        self.update_recent_menu();
+    }
+
+    /// Removes `path` from **Open Recent**, if it is there.
+    fn forget_recent(&self, path: &Path) {
+        {
+            let mut state = self.state.borrow_mut();
+            if !state.recent_files.iter().any(|known| known == path) {
+                return;
+            }
+            state.forget_recent(path);
+            let _ = state.save();
+        }
+        self.update_recent_menu();
+    }
+
+    /// Rebuilds **Open Recent** from the recent files. Each entry opens its file through
+    /// `win.open-uri`, and so through the unsaved-changes guard.
+    fn update_recent_menu(&self) {
+        let home = glib::home_dir();
+        self.recent_menu.remove_all();
+        for path in &self.state.borrow().recent_files {
+            let item = gio::MenuItem::new(Some(&recent_label(path, &home)), None);
+            let uri = gio::File::for_path(path).uri();
+            item.set_action_and_target_value(Some("win.open-uri"), Some(&uri.to_variant()));
+            self.recent_menu.append_item(&item);
+        }
     }
 
     fn remembered_folder(&self) -> Option<gio::File> {
@@ -552,7 +587,7 @@ impl MainWindow {
             Ok(()) => {
                 self.editor.buffer().set_modified(false);
                 self.modified_on_disk.set(modification_time(&path));
-                self.remember_folder(&path);
+                self.remember_file(&path);
                 self.set_path(path);
                 true
             }
@@ -609,7 +644,7 @@ impl MainWindow {
             .borrow()
             .as_deref()
             .and_then(Path::parent)
-            .map(abbreviate_home)
+            .map(|folder| abbreviate_home(folder, &glib::home_dir()))
             .unwrap_or_default();
         let marker = if self.editor.buffer().is_modified() {
             "• "
@@ -646,18 +681,33 @@ fn modification_time(path: &Path) -> Option<SystemTime> {
 }
 
 /// `folder` with the home directory shortened to `~`, as file managers show it.
-fn abbreviate_home(folder: &Path) -> String {
-    match folder.strip_prefix(glib::home_dir()) {
+fn abbreviate_home(folder: &Path, home: &Path) -> String {
+    match folder.strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => folder.display().to_string(),
     }
 }
 
-fn primary_menu() -> gio::Menu {
+/// The **Open Recent** entry for `path`: "post.md — ~/blog". Underscores are doubled because
+/// menu labels treat a single one as a mnemonic marker.
+fn recent_label(path: &Path, home: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let folder = path
+        .parent()
+        .map(|folder| abbreviate_home(folder, home))
+        .unwrap_or_default();
+    format!("{name} — {folder}").replace('_', "__")
+}
+
+fn primary_menu(recent: &gio::Menu) -> gio::Menu {
     let file = gio::Menu::new();
     file.append(Some("_New"), Some("win.new"));
     file.append(Some("_Open…"), Some("win.open"));
+    file.append_submenu(Some("Open _Recent"), recent);
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
     let zoom = gio::Menu::new();
@@ -694,4 +744,30 @@ fn file_dialog(title: &str) -> gtk::FileDialog {
         .filters(&filters)
         .default_filter(&markdown)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_label_shows_the_file_name_and_its_folder_under_home() {
+        let label = recent_label(Path::new("/home/u/blog/post.md"), Path::new("/home/u"));
+        assert_eq!(label, "post.md — ~/blog");
+    }
+
+    #[test]
+    fn recent_label_shows_a_folder_outside_home_in_full() {
+        let label = recent_label(Path::new("/srv/notes/post.md"), Path::new("/home/u"));
+        assert_eq!(label, "post.md — /srv/notes");
+    }
+
+    #[test]
+    fn recent_label_doubles_underscores_so_they_are_not_mnemonics() {
+        let label = recent_label(
+            Path::new("/home/u/my_blog/draft_1.md"),
+            Path::new("/home/u"),
+        );
+        assert_eq!(label, "draft__1.md — ~/my__blog");
+    }
 }

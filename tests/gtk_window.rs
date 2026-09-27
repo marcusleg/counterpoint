@@ -1,6 +1,6 @@
 //! GTK checks for the main window built through the public API: the chat pane, the primary menu
-//! and zoom controls, the unsaved-changes and file dialogs, saving, and a chat round trip against
-//! a mock endpoint. GTK must run on the thread that initialised it and only one
+//! and zoom controls, the unsaved-changes and file dialogs, saving, Open Recent, and a chat round
+//! trip against a mock endpoint. GTK must run on the thread that initialised it and only one
 //! `gtk::Application` may run per process, so this test builds the real window inside
 //! `connect_activate`, drives it with `glib::idle_add_local_once` once it is realized, and quits
 //! the application afterwards. It needs a display; `dev/headless.sh cargo test` provides a
@@ -100,6 +100,63 @@ fn menu_labels(model: &gio::MenuModel) -> Vec<String> {
         }
     }
     labels
+}
+
+/// The primary menu's model.
+fn primary_menu_model(root: &gtk::Widget) -> gio::MenuModel {
+    widgets_under(root)
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::MenuButton>())
+        .find(|b| b.icon_name().as_deref() == Some("open-menu-symbolic"))
+        .and_then(|b| b.popover())
+        .and_downcast::<gtk::PopoverMenu>()
+        .and_then(|popover| popover.menu_model())
+        .expect("the primary menu has a model")
+}
+
+/// The submenu behind **Open Recent** in the primary menu.
+fn recent_submenu(root: &gtk::Widget) -> gio::MenuModel {
+    let model = primary_menu_model(root);
+    (0..model.n_items())
+        .filter_map(|i| model.item_link(i, "section"))
+        .find_map(|section| {
+            (0..section.n_items()).find_map(|j| {
+                let label = section.item_attribute_value(j, "label", None)?;
+                (label.str() == Some("Open _Recent"))
+                    .then(|| section.item_link(j, "submenu"))
+                    .flatten()
+            })
+        })
+        .expect("the primary menu has an Open Recent submenu")
+}
+
+/// (label, action, target) of every entry in `menu`.
+fn menu_entries(menu: &gio::MenuModel) -> Vec<(String, String, Option<glib::Variant>)> {
+    (0..menu.n_items())
+        .map(|i| {
+            let string = |name| {
+                menu.item_attribute_value(i, name, None)
+                    .and_then(|v| v.str().map(str::to_string))
+                    .unwrap_or_default()
+            };
+            (
+                string("label"),
+                string("action"),
+                menu.item_attribute_value(i, "target", None),
+            )
+        })
+        .collect()
+}
+
+/// Activates the **Open Recent** entry whose label starts with `name`.
+fn activate_recent(window: &gtk::Window, root: &gtk::Widget, name: &str) {
+    let (_, action, target) = menu_entries(&recent_submenu(root))
+        .into_iter()
+        .find(|(label, _, _)| label.starts_with(name))
+        .unwrap_or_else(|| panic!("an Open Recent entry for {name}"));
+    window
+        .activate_action(&action, target.as_ref())
+        .expect("the Open Recent action exists");
 }
 
 /// The rows of the chat list with the given CSS class.
@@ -237,6 +294,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     new_document(checks, &window, &root, &buffer);
     unsaved_changes_dialog(checks, &window, &root, &buffer);
     files(checks, main, &window, &root, &buffer, work_dir);
+    recent_files(checks, main, &window, &root, &buffer, work_dir);
     chat(
         checks, &window, &root, &input, &send, &stop, &mode, &buffer, &banner,
     );
@@ -271,6 +329,7 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
     let expected_labels = [
         "_New".to_string(),
         "_Open…".to_string(),
+        "Open _Recent".to_string(),
         "_Save".to_string(),
         "Save _As…".to_string(),
         "_Preferences".to_string(),
@@ -280,6 +339,10 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
     checks.check(
         menu_labels(&menu_model) == expected_labels,
         "the primary menu follows the GNOME HIG and has no Quit item",
+    );
+    checks.check(
+        recent_submenu(root).n_items() == 0,
+        "Open Recent is shown with an empty list before any file was opened",
     );
 
     let zoom_box = widgets
@@ -635,6 +698,91 @@ fn files(
     checks.check(
         main.load_path(&work_dir.join("missing.md")).is_err(),
         "load_path reports a missing file",
+    );
+}
+
+fn recent_files(
+    checks: &mut Checks,
+    main: &Rc<MainWindow>,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+    work_dir: &Path,
+) {
+    let recent_names = || -> Vec<String> {
+        menu_entries(&recent_submenu(root))
+            .into_iter()
+            .map(|(label, _, _)| label.split(" — ").next().unwrap_or_default().to_string())
+            .collect()
+    };
+    let crlf = work_dir.join("crlf.md");
+    let other = work_dir.join("other_post.md");
+    fs::write(&other, "Other post.\n").unwrap();
+
+    checks.check(
+        recent_names() == ["crlf.md"],
+        "a file opened earlier is listed under Open Recent",
+    );
+    let folder = work_dir.display().to_string().replace('_', "__");
+    checks.check(
+        menu_entries(&recent_submenu(root))
+            .first()
+            .is_some_and(|(label, _, _)| *label == format!("crlf.md — {folder}")),
+        "an Open Recent entry shows the file name and its folder",
+    );
+
+    main.load_path(&other).expect("the second file opens");
+    checks.check(
+        recent_names() == ["other__post.md", "crlf.md"],
+        "the newest file comes first, with underscores escaped",
+    );
+
+    activate_recent(window, root, "crlf.md");
+    let title = widgets_under(root)
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::WindowTitle>().ok())
+        .expect("window title widget");
+    pump_until(
+        checks,
+        "activating an Open Recent entry opens that file",
+        DIALOG_TIMEOUT,
+        || title.title() == "crlf.md",
+    );
+    checks.check(
+        !buffer.is_modified() && buffer.char_count() > 0,
+        "the reopened file is loaded unmodified",
+    );
+    checks.check(
+        recent_names() == ["crlf.md", "other__post.md"],
+        "reopening a file moves it to the top without duplicating it",
+    );
+
+    fs::remove_file(&other).unwrap();
+    activate_recent(window, root, "other__post.md");
+    if pump_until(
+        checks,
+        "opening a missing recent file shows an alert",
+        DIALOG_TIMEOUT,
+        || find_alert(root).is_some(),
+    ) {
+        let alert = find_alert(root).unwrap();
+        checks.check(
+            alert.heading().as_deref() == Some("Could Not Open File"),
+            "the alert explains the file could not be opened",
+        );
+        find_button(&alert, "_OK").unwrap().emit_clicked();
+        pump_until(checks, "OK closes the alert", DIALOG_TIMEOUT, || {
+            find_alert(root).is_none()
+        });
+    }
+    checks.check(
+        recent_names() == ["crlf.md"],
+        "a recent file that can no longer be opened is dropped from the list",
+    );
+    let state_path = state::state_path().unwrap();
+    checks.check(
+        State::load_from(&state_path).recent_files == [crlf],
+        "the recent files are persisted to the state file",
     );
 }
 
