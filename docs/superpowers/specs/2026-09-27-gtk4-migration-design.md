@@ -156,7 +156,7 @@ the nearest step, when the window is created.
   saves it back (`MainWindow::remember_folder`); a failure to save is ignored, since the state is
   a convenience and must never interrupt the user.
 - Unsaved-changes guard: New, Open, the window's `close-request` and Quit share one helper,
-  `confirm_discard(then)`. When the buffer is modified it shows an `AdwAlertDialog` ("Save
+  `confirm_discard()`. When the buffer is modified it shows an `AdwAlertDialog` ("Save
   changes?") with responses Cancel (close response, so Escape cancels), Discard (destructive) and Save
   (suggested and default, so Enter saves). Save runs Save (or Save As) and continues only if the save succeeded; Discard
   continues; Cancel does nothing. `close-request` returns `Propagation::Stop` while the dialog is
