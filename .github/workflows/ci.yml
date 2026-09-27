@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Fedora ships GTK 4.18, libadwaita 1.8 and GtkSourceView 5.12, which the crates require.
+    container: fedora:43
+    env:
+      # The toolchain and the crate cache live under world-traversable paths instead of
+      # /root, so they are reachable from the unprivileged account that runs the tests below.
+      RUSTUP_HOME: /usr/local/rustup
+      CARGO_HOME: /usr/local/cargo
+    steps:
+      - name: Install GTK, a headless display and a session bus
+        # gtk4 carries gtk4-broadwayd, dbus-daemon carries dbus-run-session, iproute carries
+        # ss (all used by dev/headless.sh); python3 runs the fixture generator and the mock
+        # LLM server; git is needed by actions/checkout and by the round-trip test.
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          gtk4-devel libadwaita-devel gtksourceview5-devel gtk4 dbus-daemon git python3 gcc iproute
+
+      - uses: actions/checkout@v4
+
+      - name: Trust the checkout although the container user differs from its owner
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: dtolnay/rust-toolchain@1.92
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check that the fixtures are the generated ones
+        run: python3 tests/fixtures/generate.py && git diff --exit-code tests/fixtures
+
+      - name: Run the tests as an unprivileged user
+        # The container runs as root, and root can write into a read-only directory, so
+        # document.rs's test of a failed temporary write would be skipped. The tests run as a
+        # fresh user instead. The toolchain and the crate cache were installed and restored by
+        # root; they are handed to that user (root can still read them for the cache save
+        # afterwards, since root ignores file modes) because cargo has to write its package
+        # cache lock under CARGO_HOME even when nothing needs downloading. su without "-"
+        # passes the environment through, including RUSTUP_HOME and CARGO_HOME, but resets
+        # PATH and HOME, so PATH is set again explicitly. dev/headless.sh requires
+        # XDG_RUNTIME_DIR, which a container does not provide.
+        run: |
+          useradd -m ci
+          chown -R ci . "$RUSTUP_HOME" "$CARGO_HOME"
+          install -d -m 700 -o ci /tmp/xdg-runtime-ci
+          su ci -c "PATH=$PATH XDG_RUNTIME_DIR=/tmp/xdg-runtime-ci dev/headless.sh cargo test"
