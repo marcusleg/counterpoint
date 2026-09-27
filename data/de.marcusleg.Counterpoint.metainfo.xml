@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>de.marcusleg.Counterpoint</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Counterpoint</name>
+  <summary>Write Markdown with an LLM at your side</summary>
+  <developer id="de.marcusleg">
+    <name>Marcus Legendre</name>
+  </developer>
+  <description>
+    <p>
+      A Markdown editor for LLM-assisted writing of blog articles and social media posts. You
+      edit the Markdown source directly, and files are saved exactly as you edit them.
+    </p>
+    <p>Highlight text, then chat with an LLM about it in one of two modes:</p>
+    <ul>
+      <li>Sparring: the LLM reads the document and critiques it, without changing it.</li>
+      <li>Ghostwriting: the LLM proposes edits that you review and apply or reject.</li>
+    </ul>
+    <p>
+      Counterpoint works with any OpenAI-compatible chat completions endpoint, such as Ollama,
+      llama.cpp or a hosted provider. Every chat message sends the whole document to that
+      endpoint.
+    </p>
+  </description>
+  <launchable type="desktop-id">de.marcusleg.Counterpoint.desktop</launchable>
+  <provides>
+    <binary>counterpoint</binary>
+  </provides>
+  <url type="homepage">https://github.com/marcusleg/counterpoint</url>
+  <url type="bugtracker">https://github.com/marcusleg/counterpoint/issues</url>
+  <url type="vcs-browser">https://github.com/marcusleg/counterpoint</url>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+</component>
