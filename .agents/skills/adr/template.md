@@ -1,9 +1,3 @@
-<!--
-Copy this file to docs/adr/NNNN-short-title.md, using the next unused four-digit number.
-The title states the decision ("Use GtkSourceView for the editor"), not the topic.
-Delete the placeholders and these comments.
--->
-
 # ADR-NNNN: Title that states the decision
 
 |        |                                                            |
@@ -41,11 +35,7 @@ What it would have looked like and why it was not chosen.
 
 What it would have looked like and why it was not chosen.
 
-<!--
-Add the section below only when the record is amended.
-Amend when the broad decision still holds but a detail has changed.
-Supersede, with a new ADR, when the decision is revoked and a new one takes its place.
--->
+<!-- Only once the record has been amended. -->
 
 ## Amendments
 
