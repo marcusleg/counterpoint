@@ -39,6 +39,8 @@ each test on its own thread).
 | `text_diff.rs` (new) | `minimal_edit(old, new) -> Option<Span>` where `Span { start, end, replacement }`; `start`/`end` are offsets in Unicode scalar values (chars) into `old`; returns `None` when equal |
 | `chat_markup.rs` (new) | `to_pango(markdown) -> String`, converts Markdown to Pango markup with its own escaping |
 | `model_requests.rs` (new) | `ModelRequests` tracks the last requested (base URL, API key) pair and a generation counter: `begin(base_url, api_key, force) -> Option<Ticket>` (None when unchanged and not forced) and `is_current(&Ticket)` |
+| `state.rs` (new) | `State { last_folder, zoom }` (de)serialized as JSON; `load`/`load_from` default on a missing or invalid file; `save`/`save_to` write atomically (temp file + rename) and return `Err` instead of panicking, including when the state cannot be serialized (e.g. a `last_folder` that is not valid UTF-8); `state_path`/`state_path_from` resolve `$XDG_STATE_HOME/counterpoint/state.json`, falling back to `~/.local/state` |
+| `zoom.rs` (new) | `Zoom`, a percentage clamped to `50..=300` and stepped by 10; `from_percent` rounds to the nearest step; `zoom_in`/`zoom_out`/`reset`; `can_zoom_in`/`can_zoom_out` for disabling the bound buttons; `label` formats the percentage |
 
 ### UI modules (`src/ui/`)
 
@@ -112,10 +114,12 @@ accelerator.
 
 The zoom controls scale the editor's text only, in steps of 10 percentage points from 50% to
 300%; the zoom-in and zoom-out buttons (and their actions) disable themselves at the bounds. The
-level is applied through a `GtkCssProvider` scoped to the editor view's own `counterpoint-editor`
-style class (`font-size: <percent>%`), registered on the display once per `EditorView` and
-reloaded on every zoom change. The level persists in the state file (`state.rs`) and is restored,
-rounded to the nearest step, when the window is created.
+level is applied through a `GtkCssProvider` scoped to a style class private to that `EditorView`
+instance (`counterpoint-editor-{n}`, from a `static NEXT_EDITOR_ID: AtomicU64` counter;
+`font-size: <percent>%`), registered on the display once per `EditorView` and reloaded on every
+zoom change, so that two editors in the same process never share a class and, through it, each
+other's zoom level. The level persists in the state file (`state.rs`) and is restored, rounded to
+the nearest step, when the window is created.
 
 ## Editor
 
@@ -279,6 +283,11 @@ One `main` runs every check in turn on the main thread:
 - After `load`: `can_undo()` is false and the buffer is not modified.
 - Apply: after `apply_markdown`, one undo restores the exact old text and one redo the new text;
   a mark outside the changed span keeps its offset.
+- Zoom: the rendered pixel height of an `EditorView`'s first line (via
+  `gtk::test_widget_wait_for_draw`, since a relative CSS `font-size` is not reflected by
+  `pango_context().font_description()` under Broadway) increases from `set_zoom(100)` to
+  `set_zoom(200)`; with two `EditorView`s, `set_zoom(200)` on the first leaves the second's line
+  height unchanged, since each editor's zoom CSS provider targets its own style class.
 - Every `chat_markup` output in a set of sample inputs is accepted by `GtkLabel::set_markup`
   (Pango's own parser rejects GtkLabel's `<a>` links, so the check uses a label).
 - If GTK cannot initialise (no display), the test prints `SKIPPED: no display` and exits
@@ -288,7 +297,15 @@ One `main` runs every check in turn on the main thread:
 public API: `MainWindow::new` is presented inside a real `adw::Application`, and the checks run
 once the window is realized, walking the widget tree to confirm the chat input enables Send, the
 mode toggle switches the chat's placeholder hint, the selection chip reflects the editor's
-selection, and the editor placeholder shows and hides with the editor's text.
+selection, and the editor placeholder shows and hides with the editor's text. It also checks:
+
+- the primary menu's labels follow the GNOME HIG (no Quit item);
+- the mode toggle lives in the chat pane, not the header bar, while the zoom controls are packed
+  at the header bar's start, before the window title and before the primary menu;
+- the zoom actions (`win.zoom-in`, `win.zoom-out`, `win.zoom-reset`) step, reset and clamp at the
+  bounds, and `win.zoom-out` disables itself at the minimum and re-enables away from it;
+- the zoom level persists to the state file and a second window created in the same process
+  starts at that persisted level.
 
 ### Headless runs
 

@@ -236,13 +236,24 @@ fn run_checks(app: &adw::Application, checks: &mut Checks) {
         zoom_box.ancestor(adw::HeaderBar::static_type()).is_some(),
         "the zoom controls live inside the header bar",
     );
+    let title_widget = widgets
+        .iter()
+        .find(|w| w.type_() == adw::WindowTitle::static_type())
+        .expect("window title")
+        .clone();
     let zoom_widget = zoom_box.upcast::<gtk::Widget>();
     let menu_widget = menu_button.upcast::<gtk::Widget>();
     let zoom_index = widgets.iter().position(|w| *w == zoom_widget);
+    let title_index = widgets.iter().position(|w| *w == title_widget);
     let menu_index = widgets.iter().position(|w| *w == menu_widget);
     checks.check(
-        zoom_index.is_some() && zoom_index < menu_index,
-        "the zoom controls are packed at the header bar's start, before the primary menu",
+        zoom_index.is_some()
+            && title_index.is_some()
+            && menu_index.is_some()
+            && zoom_index < title_index
+            && title_index < menu_index,
+        "the zoom controls are packed at the header bar's start, before the window title and \
+         before the primary menu",
     );
 
     let zoom_label = widgets

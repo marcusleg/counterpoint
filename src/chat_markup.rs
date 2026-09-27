@@ -1,6 +1,6 @@
 //! Renders the Markdown of chat replies as Pango markup for GTK labels.
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 
 /// Converts `markdown` to Pango markup. Supports paragraphs, headings, emphasis, strong,
 /// strikethrough, inline code, code blocks, lists, block quotes and rules. Links whose
@@ -131,11 +131,21 @@ impl Writer {
             Tag::Emphasis => self.out.push_str("<i>"),
             Tag::Strong => self.out.push_str("<b>"),
             Tag::Strikethrough => self.out.push_str("<s>"),
-            Tag::Link { dest_url, .. } => {
-                let clickable = is_clickable(&dest_url);
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => {
+                // An email autolink's `dest_url` is the bare address with no scheme.
+                let href = if link_type == LinkType::Email {
+                    format!("mailto:{dest_url}")
+                } else {
+                    dest_url.into_string()
+                };
+                let clickable = is_clickable(&href);
                 if clickable {
                     self.out.push_str("<a href=\"");
-                    self.out.push_str(&escape(&dest_url));
+                    self.out.push_str(&escape(&href));
                     self.out.push_str("\">");
                 }
                 self.links.push(clickable);
@@ -325,6 +335,14 @@ mod tests {
         );
         check("[passwd](file:///etc/passwd)", "passwd");
         check("[notes](notes.md)", "notes");
+    }
+
+    #[test]
+    fn email_autolinks_become_mailto() {
+        check(
+            "<user@example.com>",
+            "<a href=\"mailto:user@example.com\">user@example.com</a>",
+        );
     }
 
     #[test]
