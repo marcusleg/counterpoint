@@ -54,5 +54,9 @@ done
 # COUNTERPOINT_REQUIRE_DISPLAY makes the test binaries fail loudly instead of printing SKIPPED if
 # this display turns out not to be usable, instead of silently passing. dbus-run-session gives
 # the command its own private session bus, so a headless run can never forward to, or be
-# activated by, a Counterpoint instance on the user's own D-Bus session.
-COUNTERPOINT_REQUIRE_DISPLAY=1 GDK_BACKEND=broadway BROADWAY_DISPLAY="$display" dbus-run-session -- "$@"
+# activated by, a Counterpoint instance on the user's own D-Bus session. On that private bus,
+# portals and GVfs would be started on demand (and try to reach the real desktop); GTK,
+# libadwaita and GIO are told not to use them.
+COUNTERPOINT_REQUIRE_DISPLAY=1 GDK_BACKEND=broadway BROADWAY_DISPLAY="$display" \
+    GDK_DEBUG=no-portals ADW_DISABLE_PORTAL=1 GIO_USE_VFS=local \
+    dbus-run-session -- "$@"
