@@ -1,7 +1,7 @@
 //! Small session state remembered across restarts: the most recently used folder, the recently
-//! opened files and the editor's zoom level. Kept in its own file, separate from the LLM settings in `config.rs`,
-//! since it is a convenience rather than user configuration: a missing or broken state file
-//! must never block the app.
+//! opened files and the editor's zoom level. Kept in its own file, separate from the LLM
+//! settings in `config.rs`, since it is a convenience rather than user configuration: a missing
+//! or broken state file must never block the app.
 
 use std::fmt;
 use std::fs;
@@ -75,6 +75,16 @@ impl State {
             let _ = fs::remove_file(&temp_path);
         }
         result.map_err(|e| error(&e))
+    }
+
+    /// Records `path` as just opened or saved: its folder becomes `last_folder` and the file
+    /// moves to the front of the recent files. As in `add_recent`, a folder that is not valid
+    /// UTF-8 is not recorded.
+    pub fn remember_file(&mut self, path: &Path) {
+        if let Some(folder) = path.parent().filter(|folder| folder.to_str().is_some()) {
+            self.last_folder = Some(folder.to_path_buf());
+        }
+        self.add_recent(path);
     }
 
     /// Moves `path` to the front of the recent files, dropping the oldest beyond
@@ -245,6 +255,28 @@ mod tests {
         let mut state = State::default();
         state.add_recent(Path::new(OsStr::from_bytes(b"/tmp/caf\xe9.md")));
         assert!(state.recent_files.is_empty());
+    }
+
+    #[test]
+    fn remember_file_records_the_folder_and_the_recent_file() {
+        let mut state = State::default();
+        state.remember_file(Path::new("/blog/post.md"));
+        assert_eq!(state.last_folder, Some(PathBuf::from("/blog")));
+        assert_eq!(state.recent_files, vec![PathBuf::from("/blog/post.md")]);
+    }
+
+    #[test]
+    fn remember_file_keeps_a_non_utf8_folder_out_so_the_state_can_still_be_saved() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        state.remember_file(Path::new("/blog/post.md"));
+        state.remember_file(Path::new(OsStr::from_bytes(b"/caf\xe9/post.md")));
+        assert_eq!(state.last_folder, Some(PathBuf::from("/blog")));
+        assert!(state.save_to(&path).is_ok());
     }
 
     #[test]
