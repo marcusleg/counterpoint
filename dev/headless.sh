@@ -3,10 +3,22 @@
 # Usage: dev/headless.sh cargo test
 set -eu
 
+# gtk4-broadwayd puts its socket in XDG_RUNTIME_DIR; a fallback to /tmp would be shared with
+# every other user on the machine, so a missing runtime directory is an error.
+: "${XDG_RUNTIME_DIR:?is not set; export it to a private directory (for example /run/user/\$(id -u)) before running dev/headless.sh}"
+
 number="${HEADLESS_DISPLAY:-5}"
 display=":$number"
 # Display :N listens on broadway<N+1>.socket.
-socket="${XDG_RUNTIME_DIR:-/tmp}/broadway$((number + 1)).socket"
+socket="$XDG_RUNTIME_DIR/broadway$((number + 1)).socket"
+
+# Another headless run (or a real Broadway display) on the same number is still listening:
+# deleting its socket from under it would break that run, so refuse instead. This comes before
+# the cleanup trap below is installed, because that trap deletes the socket.
+if command -v ss >/dev/null && ss -xl 2>/dev/null | grep -qF "$socket"; then
+    echo "$socket is in use by another gtk4-broadwayd; set HEADLESS_DISPLAY to a free number" >&2
+    exit 1
+fi
 
 # Set before the traps are installed below, so cleanup can never see an unbound variable if a
 # signal arrives before the daemon is started or its log file is created.
@@ -56,7 +68,10 @@ done
 # the command its own private session bus, so a headless run can never forward to, or be
 # activated by, a Counterpoint instance on the user's own D-Bus session. On that private bus,
 # portals and GVfs would be started on demand (and try to reach the real desktop); GTK,
-# libadwaita and GIO are told not to use them.
+# libadwaita and GIO are told not to use them. GSETTINGS_BACKEND=memory keeps the run from
+# reading or changing the user's dconf settings. G_DEBUG=fatal-criticals turns a GLib/GTK
+# critical warning into an abort, so the tests catch it instead of scrolling past it.
 COUNTERPOINT_REQUIRE_DISPLAY=1 GDK_BACKEND=broadway BROADWAY_DISPLAY="$display" \
-    GDK_DEBUG=no-portals ADW_DISABLE_PORTAL=1 GIO_USE_VFS=local \
+    GDK_DEBUG=no-portals ADW_DISABLE_PORTAL=1 GIO_USE_VFS=local GSETTINGS_BACKEND=memory \
+    G_DEBUG=fatal-criticals \
     dbus-run-session -- "$@"
