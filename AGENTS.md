@@ -4,6 +4,9 @@
 
 - Never commit directly to `main`. Create a branch before making code changes.
 - When the work is done, push the branch and open a pull request against `main` with `gh pr create`.
+- Wait for the CI checks to pass before merging a pull request that changes code. CI only runs
+  for the paths listed in `.github/workflows/ci.yml`, so a pull request that only changes
+  documentation has no checks to wait for.
 - Merge pull requests with rebase and merge by default. Squash and merge is also allowed.
 - Once the pull request is merged, delete the branch both locally and on the remote.
 
