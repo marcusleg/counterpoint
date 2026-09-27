@@ -3,7 +3,8 @@
 //! the thread that initialised it and only one `gtk::Application` may run per process, so this
 //! test builds the real window inside `connect_activate`, drives it with
 //! `glib::idle_add_local_once` once it is realized, and quits the application afterwards.
-//! It needs a display; `dev/headless.sh cargo test` provides a private one.
+//! It needs a display; `dev/headless.sh cargo test` provides a private one and sets
+//! `COUNTERPOINT_REQUIRE_DISPLAY` so a missing display fails loudly instead of skipping silently.
 
 use std::cell::RefCell;
 use std::process::ExitCode;
