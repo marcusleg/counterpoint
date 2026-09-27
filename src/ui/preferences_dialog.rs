@@ -6,7 +6,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::llm;
 use crate::model_requests::{self, ModelRequests};
 
@@ -89,16 +89,6 @@ impl PreferencesDialog {
             .visible(false)
             .css_classes(["error"])
             .build();
-        let path = config::settings_path()
-            .map(|path| format!("Stored in {} (readable only by you).", path.display()))
-            .unwrap_or_else(|message| message);
-        let path_label = gtk::Label::builder()
-            .label(path)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["dim-label", "caption"])
-            .build();
-
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
@@ -110,7 +100,6 @@ impl PreferencesDialog {
         content.append(&group);
         content.append(&status_row);
         content.append(&load_error);
-        content.append(&path_label);
 
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::builder()

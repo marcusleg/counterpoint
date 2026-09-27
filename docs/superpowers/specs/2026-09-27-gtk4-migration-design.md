@@ -231,7 +231,6 @@ breaks, and horizontal rules. A link with any other destination renders its text
   "n models available.", "The endpoint lists no models.", or the fetch error).
 - Load error: the `Config::load` error in its own label with the `error` style class, hidden when
   there is none.
-- Footer: "Stored in <path> (readable only by you)." (dimmed).
 
 Behaviour:
 
