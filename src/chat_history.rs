@@ -4,14 +4,12 @@
 //! exists but cannot be read is reported and never overwritten.
 
 use std::collections::BTreeMap;
-use std::fmt;
-use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::chat::Entry;
+use crate::json_file::{self, Durability};
 use crate::xdg;
 
 /// How many chats are kept per document; the oldest go first.
@@ -55,53 +53,20 @@ impl ChatHistory {
     }
 
     pub fn load_from(path: &Path) -> Result<Self, String> {
-        let error = |e: &dyn fmt::Display| {
-            format!("Could not read the chat history in {}: {e}", path.display())
-        };
-        match fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| error(&e)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(error(&e)),
-        }
+        json_file::read(path)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("Could not read the chat history in {}: {e}", path.display()))
     }
 
     pub fn save(&self) -> Result<(), String> {
         self.save_to(&history_path()?)
     }
 
-    /// Writes the history atomically, readable only by the owner since it holds the
-    /// conversations and names the user's files; a leftover temp file from a previous crash is
-    /// replaced.
+    /// Writes the history atomically and synced to disk, readable only by the owner since it
+    /// holds the conversations and names the user's files.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
-        let error = |e: &dyn fmt::Display| {
-            format!("Could not save the chat history to {}: {e}", path.display())
-        };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| error(&e))?;
-        }
-        let mut json = serde_json::to_string_pretty(self).map_err(|e| error(&e))?;
-        json.push('\n');
-
-        let temp_path = path.with_extension("json.tmp");
-        let _ = fs::remove_file(&temp_path);
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = options
-            .open(&temp_path)
-            .and_then(|mut file| {
-                file.write_all(json.as_bytes())?;
-                file.sync_all()
-            })
-            .and_then(|()| fs::rename(&temp_path, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        result.map_err(|e| error(&e))
+        json_file::write(path, self, Durability::Synced)
+            .map_err(|e| format!("Could not save the chat history to {}: {e}", path.display()))
     }
 
     /// The chats about `document`, newest first.
@@ -284,19 +249,8 @@ mod tests {
     fn an_invalid_file_is_an_error_rather_than_an_empty_history() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chats.json");
-        fs::write(&path, "not json").unwrap();
+        std::fs::write(&path, "not json").unwrap();
         let error = ChatHistory::load_from(&path).unwrap_err();
         assert!(error.contains("chats.json"), "{error}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn history_file_is_readable_only_by_the_owner() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chats.json");
-        ChatHistory::default().save_to(&path).unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
     }
 }

@@ -1,12 +1,11 @@
 //! LLM endpoint settings, stored in the user's settings file.
 
 use std::fmt;
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::json_file::{self, Durability};
 use crate::xdg;
 
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
@@ -46,57 +45,26 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Result<Self, String> {
-        let error = |e: &dyn fmt::Display| {
-            format!("Could not read the settings in {}: {e}", path.display())
-        };
-        let json = match fs::read_to_string(path) {
-            Ok(json) => json,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(error(&e)),
-        };
-        let stored: Self = serde_json::from_str(&json).map_err(|e| error(&e))?;
-        Ok(Self::from_fields(
-            &stored.base_url,
-            stored.api_key.as_deref().unwrap_or(""),
-            stored.model.as_deref().unwrap_or(""),
-        ))
+        let stored: Option<Self> = json_file::read(path)
+            .map_err(|e| format!("Could not read the settings in {}: {e}", path.display()))?;
+        Ok(stored.map_or_else(Self::default, |stored| {
+            Self::from_fields(
+                &stored.base_url,
+                stored.api_key.as_deref().unwrap_or(""),
+                stored.model.as_deref().unwrap_or(""),
+            )
+        }))
     }
 
     pub fn save(&self) -> Result<(), String> {
         self.save_to(&settings_path()?)
     }
 
-    /// Writes the settings atomically with owner-only permissions, since they include the API key.
+    /// Writes the settings atomically and synced to disk, with owner-only permissions since
+    /// they include the API key.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
-        let error =
-            |e: std::io::Error| format!("Could not save the settings to {}: {e}", path.display());
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(error)?;
-        }
-        let mut json = serde_json::to_string_pretty(self).expect("settings always serialize");
-        json.push('\n');
-
-        let temp_path = path.with_extension("json.tmp");
-        // A leftover temp file could carry wider permissions; start from a fresh one.
-        let _ = fs::remove_file(&temp_path);
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = options
-            .open(&temp_path)
-            .and_then(|mut file| {
-                file.write_all(json.as_bytes())?;
-                file.sync_all()
-            })
-            .and_then(|()| fs::rename(&temp_path, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        result.map_err(error)
+        json_file::write(path, self, Durability::Synced)
+            .map_err(|e| format!("Could not save the settings to {}: {e}", path.display()))
     }
 
     pub fn require_model(&self) -> Result<&str, String> {
@@ -230,36 +198,6 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"base_url": " ", "api_key": "", "model": ""}"#).unwrap();
         assert_eq!(Config::load_from(&path), Ok(Config::default()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn settings_file_is_readable_only_by_the_owner() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        Config::from_fields("", "secret", "m")
-            .save_to(&path)
-            .unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn saving_twice_leaves_no_temp_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        Config::from_fields("", "", "a").save_to(&path).unwrap();
-        Config::from_fields("", "", "b").save_to(&path).unwrap();
-        let names: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(names, vec![std::ffi::OsString::from("settings.json")]);
-        assert_eq!(
-            Config::load_from(&path).unwrap().model.as_deref(),
-            Some("b")
-        );
     }
 
     #[test]
