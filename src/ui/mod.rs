@@ -71,8 +71,14 @@ pub fn run() -> glib::ExitCode {
         load_style();
         add_app_actions(app);
     });
-    app.connect_activate(|app| {
-        main_window(app).present();
+    // A plain start reopens the file and chat from last time; a running app is just raised.
+    app.connect_activate(|app| match app.active_window() {
+        Some(window) => window.present(),
+        None => {
+            let window = MainWindow::new(app);
+            window.present();
+            window.restore_session();
+        }
     });
     // `counterpoint post.md`, or a file manager: the (single) window opens the first file,
     // through its own unsaved-changes guard.

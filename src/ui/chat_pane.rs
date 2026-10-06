@@ -27,6 +27,9 @@ const SELECTION_PREVIEW_CHARS: usize = 120;
 const CHAT_TITLE_CHARS: usize = 60;
 const NEW_CHAT: &str = "New Conversation";
 
+/// Called with the id of the chat the conversation became, or `None` if it is not saved yet.
+type ChatChanged = Box<dyn Fn(Option<u64>)>;
+
 pub struct ChatPane {
     root: gtk::Box,
     editor: EditorView,
@@ -51,6 +54,8 @@ pub struct ChatPane {
     chat_ids: RefCell<Vec<Option<u64>>>,
     /// Set while the chat list is rebuilt, so its selection changes are not taken for the user's.
     updating_chat_list: Cell<bool>,
+    /// Told whenever the conversation becomes another chat, or a conversation not saved yet.
+    chat_changed: RefCell<Option<ChatChanged>>,
     config_banner: adw::Banner,
     empty_state: adw::StatusPage,
     /// Shows the empty state or the message list.
@@ -238,6 +243,7 @@ impl ChatPane {
             chat_labels,
             chat_ids: RefCell::new(Vec::new()),
             updating_chat_list: Cell::new(false),
+            chat_changed: RefCell::new(None),
             config_banner,
             empty_state,
             stack,
@@ -273,7 +279,7 @@ impl ChatPane {
             pane,
             move |_| {
                 pane.conversation.borrow_mut().reset();
-                pane.chat_id.set(None);
+                pane.set_chat_id(None);
                 pane.render();
             }
         ));
@@ -414,11 +420,26 @@ impl ChatPane {
 
     fn set_document(&self, path: Option<&Path>) {
         *self.document.borrow_mut() = path.map(Path::to_path_buf);
-        self.chat_id.set(None);
+        self.set_chat_id(None);
     }
 
-    /// Continues the saved chat `id` about the open document.
-    fn switch_to_chat(self: &Rc<Self>, id: u64) {
+    /// Calls `callback` with the chat's id whenever the conversation becomes another saved chat,
+    /// or with `None` for a conversation not saved yet.
+    pub fn connect_chat_changed(&self, callback: impl Fn(Option<u64>) + 'static) {
+        self.chat_changed.replace(Some(Box::new(callback)));
+    }
+
+    fn set_chat_id(&self, id: Option<u64>) {
+        if self.chat_id.replace(id) != id {
+            if let Some(callback) = &*self.chat_changed.borrow() {
+                callback(id);
+            }
+        }
+    }
+
+    /// Continues the saved chat `id` about the open document, if it still has one by that id
+    /// and no reply is awaited.
+    pub fn switch_to_chat(self: &Rc<Self>, id: u64) {
         if self.chat_id.get() == Some(id) || self.conversation.borrow().is_busy() {
             return;
         }
@@ -434,7 +455,7 @@ impl ChatPane {
             return;
         };
         self.conversation.borrow_mut().restore(entries);
-        self.chat_id.set(Some(id));
+        self.set_chat_id(Some(id));
         self.render();
     }
 
@@ -457,7 +478,7 @@ impl ChatPane {
             .map_or(0, |since| since.as_secs() as i64);
         let mut history = self.history.borrow_mut();
         let id = history.store(&document, self.chat_id.get(), started, entries);
-        self.chat_id.set(id);
+        self.set_chat_id(id);
         let saved = !self.history_unreadable && history.save().is_ok();
         drop(history);
         if saved {

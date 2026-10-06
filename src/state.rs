@@ -1,7 +1,7 @@
 //! Small session state remembered across restarts: the most recently used folder, the recently
-//! opened files, the editor's zoom level and the chat pane's width. Kept in its own file, separate from the LLM
-//! settings in `config.rs`, since it is a convenience rather than user configuration: a missing
-//! or broken state file must never block the app.
+//! opened files, the open file and chat, the editor's zoom level and the chat pane's width. Kept
+//! in its own file, separate from the LLM settings in `config.rs`, since it is a convenience
+//! rather than user configuration: a missing or broken state file must never block the app.
 
 use std::fmt;
 use std::fs;
@@ -24,6 +24,11 @@ pub struct State {
     pub chat_width: Option<u32>,
     /// Recently opened or saved files, newest first, at most `MAX_RECENT_FILES`.
     pub recent_files: Vec<PathBuf>,
+    /// The file open in the window, reopened on the next start; `None` for an untitled document.
+    pub open_document: Option<PathBuf>,
+    /// The chat about `open_document` shown in the chat pane, continued on the next start;
+    /// `None` for a conversation not saved yet.
+    pub open_chat: Option<u64>,
 }
 
 impl State {
@@ -101,6 +106,14 @@ impl State {
         self.recent_files.truncate(MAX_RECENT_FILES);
     }
 
+    /// Records `path` as the open file, or none for an untitled document. As in `add_recent`, a
+    /// path that is not valid UTF-8 is not recorded.
+    pub fn remember_open_document(&mut self, path: Option<&Path>) {
+        self.open_document = path
+            .filter(|path| path.to_str().is_some())
+            .map(Path::to_path_buf);
+    }
+
     pub fn forget_recent(&mut self, path: &Path) {
         self.recent_files.retain(|known| known != path);
     }
@@ -160,6 +173,8 @@ mod tests {
             zoom: Some(150),
             chat_width: Some(420),
             recent_files: vec![PathBuf::from("/tmp/example/post.md")],
+            open_document: Some(PathBuf::from("/tmp/example/post.md")),
+            open_chat: Some(3),
         };
         state.save_to(&path).unwrap();
         assert_eq!(State::load_from(&path), state);
@@ -279,6 +294,21 @@ mod tests {
         state.remember_file(Path::new("/blog/post.md"));
         state.remember_file(Path::new(OsStr::from_bytes(b"/caf\xe9/post.md")));
         assert_eq!(state.last_folder, Some(PathBuf::from("/blog")));
+        assert!(state.save_to(&path).is_ok());
+    }
+
+    #[test]
+    fn remember_open_document_keeps_a_non_utf8_path_out_so_the_state_can_still_be_saved() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        state.remember_open_document(Some(Path::new("/blog/post.md")));
+        assert_eq!(state.open_document, Some(PathBuf::from("/blog/post.md")));
+        state.remember_open_document(Some(Path::new(OsStr::from_bytes(b"/caf\xe9.md"))));
+        assert_eq!(state.open_document, None);
         assert!(state.save_to(&path).is_ok());
     }
 

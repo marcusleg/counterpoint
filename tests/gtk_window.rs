@@ -293,7 +293,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     chat(
         checks, &window, &root, &input, &send, &stop, &mode, &buffer, &banner,
     );
-    chat_history(checks, main, &window, &root, &buffer, work_dir);
+    chat_history(checks, app, main, &window, &root, &buffer, work_dir);
 
     let second = MainWindow::new(app);
     let second_window = app
@@ -1251,6 +1251,7 @@ fn chat(
 /// The chat history, starting from where `chat` left off: one conversation about `crlf.md`.
 fn chat_history(
     checks: &mut Checks,
+    app: &adw::Application,
     main: &Rc<MainWindow>,
     window: &gtk::Window,
     root: &gtk::Widget,
@@ -1315,6 +1316,7 @@ fn chat_history(
         labels().len() == 1 && list.selected() == 0,
         "the empty new conversation leaves the list once an earlier chat is chosen",
     );
+    restored_session(checks, app, window, &crlf, user_rows);
 
     buffer.set_modified(false);
     window
@@ -1332,4 +1334,78 @@ fn chat_history(
         shown.len() == 1 && shown[0] == "Thoughts?" && !list.is_sensitive(),
         &format!("an untitled document lists no saved chats, got {shown:?}"),
     );
+    checks.check(
+        State::load_from(&state::state_path().unwrap())
+            .open_document
+            .is_none(),
+        "a new document is remembered as no file to reopen",
+    );
+}
+
+/// A new window, as on the next start, reopens the file and continues the chat recorded in the
+/// state, or keeps its new document when that file is gone. `crlf` is open in `window`, with its
+/// earlier chat of `user_rows` messages shown.
+fn restored_session(
+    checks: &mut Checks,
+    app: &adw::Application,
+    window: &gtk::Window,
+    crlf: &Path,
+    user_rows: usize,
+) {
+    let state_path = state::state_path().unwrap();
+    let state = State::load_from(&state_path);
+    checks.check(
+        state.open_document.as_deref() == Some(crlf) && state.open_chat == Some(1),
+        &format!(
+            "the open file and chat are remembered, got {:?} and {:?}",
+            state.open_document, state.open_chat
+        ),
+    );
+
+    let start = |checks: &mut Checks| -> Option<(Rc<MainWindow>, gtk::Window)> {
+        let next = MainWindow::new(app);
+        next.restore_session();
+        pump();
+        let next_window = app.windows().into_iter().find(|w| w != window);
+        checks.check(next_window.is_some(), "a second window was created");
+        next_window.map(|w| (next, w))
+    };
+    let title = |root: &gtk::Window| {
+        widgets_under(root)
+            .into_iter()
+            .find_map(|w| w.downcast::<adw::WindowTitle>().ok())
+            .map(|title| title.title().to_string())
+    };
+
+    if let Some((next, next_window)) = start(checks) {
+        let root = next_window.clone().upcast::<gtk::Widget>();
+        checks.check(
+            title(&next_window).as_deref() == Some("crlf.md"),
+            "a new window reopens the file that was open",
+        );
+        checks.check(
+            chat_rows(&root, "chat-user").len() == user_rows
+                && !chat_rows(&root, "chat-proposal").is_empty(),
+            "a new window continues the chat that was shown",
+        );
+        drop(next);
+        next_window.destroy();
+    }
+
+    let mut gone = State::load_from(&state_path);
+    gone.open_document = Some(crlf.with_file_name("gone.md"));
+    gone.save_to(&state_path).unwrap();
+    if let Some((next, next_window)) = start(checks) {
+        checks.check(
+            title(&next_window).as_deref() == Some("Untitled")
+                && find_alert(&next_window).is_none(),
+            "a file that is gone leaves a new window untitled, without an alert",
+        );
+        checks.check(
+            State::load_from(&state_path).open_document.is_none(),
+            "a file that is gone is no longer reopened",
+        );
+        drop(next);
+        next_window.destroy();
+    }
 }

@@ -55,6 +55,11 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   Ctrl+G or the down button selects the next match, and Shift+Enter, Ctrl+Shift+G or the up
   button the previous one, wrapping around the document. Ctrl+G and Ctrl+Shift+G also work
   from the editor. Escape closes the bar and returns to the editor, leaving the match selected.
+- R33. Started without a file to open, Counterpoint reopens the file that was open when it was
+  last used and continues the chat that was shown with it (R32). If that was an untitled
+  document, it starts with a new one; if the file can no longer be read, it starts with a new
+  document without reporting it, and the file leaves **Open Recent**. Started with a file, it
+  opens that file instead.
 
 ### Chat
 
@@ -115,10 +120,11 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R25. The system prompt tells the model to treat the document and highlight as material, not
   instructions.
 - R26. Settings live in `$XDG_CONFIG_HOME/counterpoint/settings.json`; the last folder, recent
-  files, zoom level and chat width in `$XDG_STATE_HOME/counterpoint/state.json`; saved chats,
-  with the paths of the files they are about, in `$XDG_DATA_HOME/counterpoint/chats.json`. All
-  three files are readable only by the user. The chats never leave the computer except as the
-  conversation of the chat being continued (R24).
+  files, open file and chat, zoom level and chat width in
+  `$XDG_STATE_HOME/counterpoint/state.json`; saved chats, with the paths of the files they are
+  about, in `$XDG_DATA_HOME/counterpoint/chats.json`. All three files are readable only by the
+  user. The chats never leave the computer except as the conversation of the chat being
+  continued (R24).
   In the Flatpak, these directories are under `~/.var/app/de.marcusleg.Counterpoint/`.
 
 ### Keyboard
