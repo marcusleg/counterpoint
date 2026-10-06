@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod chat_history;
 pub mod chat_markup;
+pub mod chat_session;
 pub mod config;
 pub mod document;
 pub mod json_file;
