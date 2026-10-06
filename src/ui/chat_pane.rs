@@ -9,15 +9,14 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gdk, glib, pango};
 
-use crate::chat::{Conversation, Entry, ProposalState};
+use crate::chat::{Conversation, Entry};
 use crate::chat_history;
-use crate::chat_markup;
 use crate::chat_session::{ChatSession, Outcome};
 use crate::config::Config;
 use crate::llm::{self, LlmError};
 use crate::prompt::{self, Mode};
-use crate::proposal::Edit;
 use crate::ui::chat_list::ChatList;
+use crate::ui::chat_messages;
 use crate::ui::editor::EditorView;
 use crate::ui::run_blocking;
 
@@ -592,116 +591,22 @@ impl ChatPane {
         );
     }
 
+    /// The row showing `entry`, the conversation's `index`th, whose buttons apply or reject
+    /// it if it is a pending proposal.
     fn row(self: &Rc<Self>, index: usize, entry: &Entry) -> gtk::ListBoxRow {
-        let (child, class): (gtk::Widget, &str) = match entry {
-            Entry::User { text } => (text_label(text).upcast(), "chat-user"),
-            Entry::Assistant { text } => (markdown_label(text).upcast(), "chat-assistant"),
-            Entry::Error { text } => {
-                let label = text_label(text);
-                label.add_css_class("error");
-                (label.upcast(), "chat-error")
-            }
-            Entry::Proposal {
-                explanation,
-                edits,
-                state,
-                ..
-            } => (
-                self.proposal_card(index, explanation, edits, *state)
-                    .upcast(),
-                "chat-proposal",
+        chat_messages::row(
+            entry,
+            glib::clone!(
+                #[weak(rename_to = pane)]
+                self,
+                move || pane.apply(index)
             ),
-        };
-        child.set_margin_top(10);
-        child.set_margin_bottom(10);
-        child.set_margin_start(12);
-        child.set_margin_end(12);
-        gtk::ListBoxRow::builder()
-            .activatable(false)
-            .selectable(false)
-            .css_classes([class])
-            .child(&child)
-            .build()
-    }
-
-    fn proposal_card(
-        self: &Rc<Self>,
-        index: usize,
-        explanation: &str,
-        edits: &[Edit],
-        state: ProposalState,
-    ) -> gtk::Box {
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        card.append(
-            &gtk::Label::builder()
-                .label("Proposed Change")
-                .xalign(0.0)
-                .css_classes(["heading"])
-                .build(),
-        );
-        if !explanation.is_empty() {
-            card.append(&markdown_label(explanation));
-        }
-        for (number, edit) in edits.iter().enumerate() {
-            if edits.len() > 1 {
-                let heading = text_label(&format!("Edit {} of {}", number + 1, edits.len()));
-                heading.add_css_class("dim-label");
-                card.append(&heading);
-            }
-            // A blank original only occurs when writing into an empty document.
-            if !edit.original.trim().is_empty() {
-                let original = markup_label(
-                    &format!("<s>{}</s>", chat_markup::escape(&edit.original)),
-                    &edit.original,
-                );
-                original.add_css_class("edit-original");
-                card.append(&original);
-            }
-            let replacement = if edit.replacement.is_empty() {
-                markup_label("<i>(delete)</i>", "(delete)")
-            } else {
-                text_label(&edit.replacement)
-            };
-            replacement.add_css_class("edit-replacement");
-            card.append(&replacement);
-        }
-        match state {
-            ProposalState::Pending => {
-                let apply = gtk::Button::builder()
-                    .label("_Apply")
-                    .use_underline(true)
-                    .css_classes(["suggested-action"])
-                    .build();
-                apply.connect_clicked(glib::clone!(
-                    #[weak(rename_to = pane)]
-                    self,
-                    move |_| pane.apply(index)
-                ));
-                let reject = gtk::Button::builder()
-                    .label("_Reject")
-                    .use_underline(true)
-                    .build();
-                reject.connect_clicked(glib::clone!(
-                    #[weak(rename_to = pane)]
-                    self,
-                    move |_| pane.reject(index)
-                ));
-                let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                buttons.append(&apply);
-                buttons.append(&reject);
-                card.append(&buttons);
-            }
-            ProposalState::Applied | ProposalState::Rejected => {
-                let done = text_label(if state == ProposalState::Applied {
-                    "✓ Applied"
-                } else {
-                    "✗ Rejected"
-                });
-                done.add_css_class("dim-label");
-                card.append(&done);
-            }
-        }
-        card
+            glib::clone!(
+                #[weak(rename_to = pane)]
+                self,
+                move || pane.reject(index)
+            ),
+        )
     }
 
     fn update_selection(&self) {
@@ -766,37 +671,6 @@ fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64)
-}
-
-fn text_label(text: &str) -> gtk::Label {
-    let label = base_label();
-    label.set_text(text);
-    label
-}
-
-/// A label showing `markdown` rendered, or as plain text should Pango reject the markup.
-fn markdown_label(markdown: &str) -> gtk::Label {
-    markup_label(&chat_markup::to_pango(markdown), markdown)
-}
-
-/// A label showing `markup`, falling back to `text` if Pango cannot parse the markup, so that a
-/// reply is never shown as an empty row.
-fn markup_label(markup: &str, text: &str) -> gtk::Label {
-    let label = base_label();
-    match pango::parse_markup(markup, '\0') {
-        Ok(_) => label.set_markup(markup),
-        Err(_) => label.set_text(text),
-    }
-    label
-}
-
-fn base_label() -> gtk::Label {
-    gtk::Label::builder()
-        .xalign(0.0)
-        .wrap(true)
-        .wrap_mode(pango::WrapMode::WordChar)
-        .selectable(true)
-        .build()
 }
 
 #[cfg(test)]
