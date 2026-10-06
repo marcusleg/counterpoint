@@ -3,13 +3,11 @@
 //! in its own file, separate from the LLM settings in `config.rs`, since it is a convenience
 //! rather than user configuration: a missing or broken state file must never block the app.
 
-use std::fmt;
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::json_file::{self, Durability};
 use crate::xdg;
 
 /// How many files **Open Recent** lists.
@@ -41,10 +39,7 @@ impl State {
     }
 
     pub fn load_from(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default()
+        json_file::read(path).ok().flatten().unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -52,36 +47,12 @@ impl State {
     }
 
     /// Writes the state atomically, readable only by the owner since it names the user's
-    /// folders; a leftover temp file from a previous crash is replaced.
+    /// folders. Not synced to disk: this is a convenience file rewritten on every zoom step on
+    /// the main thread, and the temp-file-then-rename already prevents a truncated file from
+    /// ever replacing it.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
-        let error =
-            |e: &dyn fmt::Display| format!("Could not save the state to {}: {e}", path.display());
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| error(&e))?;
-        }
-        let mut json = serde_json::to_string_pretty(self).map_err(|e| error(&e))?;
-        json.push('\n');
-
-        let temp_path = path.with_extension("json.tmp");
-        let _ = fs::remove_file(&temp_path);
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        // No `sync_all` before the rename: this is a convenience file rewritten on every zoom
-        // step on the main thread, and the temp-file-then-rename already prevents a truncated
-        // file from ever replacing it.
-        let result = options
-            .open(&temp_path)
-            .and_then(|mut file| file.write_all(json.as_bytes()))
-            .and_then(|()| fs::rename(&temp_path, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        result.map_err(|e| error(&e))
+        json_file::write(path, self, Durability::Unsynced)
+            .map_err(|e| format!("Could not save the state to {}: {e}", path.display()))
     }
 
     /// Records `path` as just opened or saved: its folder becomes `last_folder` and the file
@@ -329,40 +300,5 @@ mod tests {
         let state = State::load_from(&path);
         assert_eq!(state.zoom, Some(120));
         assert!(state.recent_files.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn state_file_is_readable_only_by_the_owner() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        State::default().save_to(&path).unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn saving_twice_leaves_no_temp_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        State {
-            zoom: Some(100),
-            ..Default::default()
-        }
-        .save_to(&path)
-        .unwrap();
-        State {
-            zoom: Some(110),
-            ..Default::default()
-        }
-        .save_to(&path)
-        .unwrap();
-        let names: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
-        assert_eq!(State::load_from(&path).zoom, Some(110));
     }
 }

@@ -3,6 +3,7 @@ pub mod chat_history;
 pub mod chat_markup;
 pub mod config;
 pub mod document;
+pub mod json_file;
 pub mod llm;
 pub mod model_requests;
 pub mod prompt;
