@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::llm::{self, LlmError};
 use crate::prompt::{self, Mode};
 use crate::proposal::Edit;
+use crate::ui::chat_list::ChatList;
 use crate::ui::editor::EditorView;
 use crate::ui::run_blocking;
 
@@ -24,9 +25,6 @@ const NO_SELECTION: &str = "No selection — whole document";
 /// The longest selection preview; the label ellipsizes anyway, and laying out a whole selected
 /// document on every cursor move would be wasted work.
 const SELECTION_PREVIEW_CHARS: usize = 120;
-/// The longest first message naming a chat in the chat list.
-const CHAT_TITLE_CHARS: usize = 60;
-const NEW_CHAT: &str = "New Conversation";
 
 /// Called with the id of the chat the conversation became, or `None` if it is not saved yet.
 type ChatChanged = Box<dyn Fn(Option<u64>)>;
@@ -39,12 +37,7 @@ pub struct ChatPane {
     mode: Cell<Mode>,
     /// Which saved chat the conversation is, saved after every change to it.
     session: RefCell<ChatSession>,
-    chat_list: gtk::DropDown,
-    chat_labels: gtk::StringList,
-    /// The chat behind each item of the chat list; `None` for a conversation not saved yet.
-    chat_ids: RefCell<Vec<Option<u64>>>,
-    /// Set while the chat list is rebuilt, so its selection changes are not taken for the user's.
-    updating_chat_list: Cell<bool>,
+    chat_list: Rc<ChatList>,
     /// Told whenever the conversation becomes another chat, or a conversation not saved yet.
     chat_changed: RefCell<Option<ChatChanged>>,
     config_banner: adw::Banner,
@@ -96,13 +89,7 @@ impl ChatPane {
             let _ = banner.activate_action("win.preferences", None);
         });
 
-        let chat_labels = gtk::StringList::new(&[]);
-        let chat_list = gtk::DropDown::builder()
-            .model(&chat_labels)
-            .factory(&chat_list_factory())
-            .tooltip_text("Earlier Chats About This Document")
-            .build();
-        chat_list.update_property(&[gtk::accessible::Property::Label("Chat")]);
+        let chat_list = ChatList::new();
 
         let selection_label = gtk::Label::builder()
             .label(NO_SELECTION)
@@ -207,7 +194,7 @@ impl ChatPane {
             .margin_start(12)
             .margin_end(12)
             .build();
-        root.append(&chat_list);
+        root.append(chat_list.widget());
         root.append(&mode);
         root.append(&config_banner);
         root.append(&stack);
@@ -223,9 +210,6 @@ impl ChatPane {
             mode: Cell::new(Mode::Sparring),
             session: RefCell::new(ChatSession::load()),
             chat_list,
-            chat_labels,
-            chat_ids: RefCell::new(Vec::new()),
-            updating_chat_list: Cell::new(false),
             chat_changed: RefCell::new(None),
             config_banner,
             empty_state,
@@ -269,23 +253,10 @@ impl ChatPane {
                 pane.render();
             }
         ));
-        pane.chat_list.connect_selected_notify(glib::clone!(
+        pane.chat_list.connect_chat_chosen(glib::clone!(
             #[weak]
             pane,
-            move |list| {
-                if pane.updating_chat_list.get() {
-                    return;
-                }
-                let id = pane
-                    .chat_ids
-                    .borrow()
-                    .get(list.selected() as usize)
-                    .copied()
-                    .flatten();
-                if let Some(id) = id {
-                    pane.switch_to_chat(id);
-                }
-            }
+            move |id| pane.switch_to_chat(id)
         ));
         pane.send_button.connect_clicked(glib::clone!(
             #[weak]
@@ -610,42 +581,15 @@ impl ChatPane {
         self.update_chat_list(busy);
     }
 
-    /// Rebuilds the chat list: the open document's saved chats, newest first, after the
-    /// conversation if it is not saved (yet). The conversation is selected; the list can only be
-    /// opened when there is another chat to choose and no reply is awaited.
     fn update_chat_list(&self, busy: bool) {
         let session = self.session.borrow();
-        let current = session.chat_id();
-        let mut ids = Vec::new();
-        let mut labels = Vec::new();
-        {
-            let saved = session.chats();
-            if !current.is_some_and(|id| saved.iter().any(|chat| chat.id == id)) {
-                let conversation = self.conversation.borrow();
-                ids.push(None);
-                labels.push(chat_label(
-                    chat_history::first_message(conversation.entries()),
-                    None,
-                ));
-            }
-            for chat in saved {
-                ids.push(Some(chat.id));
-                labels.push(chat_label(chat.first_message(), Some(chat.started)));
-            }
-        }
-        let selected = ids
-            .iter()
-            .position(|&id| id.is_none() || id == current)
-            .unwrap_or(0);
-        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-        self.updating_chat_list.set(true);
-        self.chat_labels
-            .splice(0, self.chat_labels.n_items(), &labels);
-        self.chat_list
-            .set_selected(u32::try_from(selected).expect("chat index fits in u32"));
-        self.updating_chat_list.set(false);
-        self.chat_list.set_sensitive(!busy && ids.len() > 1);
-        self.chat_ids.replace(ids);
+        let conversation = self.conversation.borrow();
+        self.chat_list.set_chats(
+            session.chat_id(),
+            chat_history::first_message(conversation.entries()),
+            session.chats(),
+            busy,
+        );
     }
 
     fn row(self: &Rc<Self>, index: usize, entry: &Entry) -> gtk::ListBoxRow {
@@ -795,53 +739,9 @@ impl ChatPane {
     }
 }
 
-/// A chat list entry: the chat's first message, after the day and time it started if it has been
-/// saved, so that an ellipsis cuts off the message rather than the date.
-fn chat_label(first_message: Option<&str>, started: Option<i64>) -> String {
-    let title = first_message
-        .map(|message| preview(message, CHAT_TITLE_CHARS))
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| NEW_CHAT.to_string());
-    let date = started
-        .and_then(|seconds| glib::DateTime::from_unix_local(seconds).ok())
-        .and_then(|date| date.format("%-d %b, %H:%M").ok());
-    match date {
-        Some(date) => format!("{date} · {title}"),
-        None => title,
-    }
-}
-
-/// Shows each chat list entry in one line, ellipsized so a long message cannot widen the pane.
-fn chat_list_factory() -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let label = gtk::Label::builder()
-            .xalign(0.0)
-            .ellipsize(pango::EllipsizeMode::End)
-            .max_width_chars(40)
-            .build();
-        item.set_child(Some(&label));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(label), Some(string)) = (
-            item.child().and_downcast::<gtk::Label>(),
-            item.item().and_downcast::<gtk::StringObject>(),
-        ) {
-            label.set_text(&string.string());
-        }
-    });
-    factory
-}
-
 /// The first `max_chars` characters of `text` with whitespace collapsed, plus an ellipsis if
 /// that cut anything off.
-fn preview(text: &str, max_chars: usize) -> String {
+pub(crate) fn preview(text: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(max_chars + 4);
     let mut count = 0;
     for word in text.split_whitespace() {
@@ -913,16 +813,5 @@ mod tests {
         let shown = preview(&long, SELECTION_PREVIEW_CHARS);
         assert!(shown.ends_with('…'), "{shown}");
         assert_eq!(shown.chars().count(), SELECTION_PREVIEW_CHARS + 1);
-    }
-
-    #[test]
-    fn chat_label_names_a_chat_by_its_first_message() {
-        assert_eq!(chat_label(None, None), NEW_CHAT);
-        assert_eq!(
-            chat_label(Some("  Is the\nintro long? "), None),
-            "Is the intro long?"
-        );
-        let label = chat_label(Some("Thoughts?"), Some(1_790_000_000));
-        assert!(label.ends_with(" · Thoughts?"), "{label}");
     }
 }
