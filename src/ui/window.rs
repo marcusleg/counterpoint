@@ -466,17 +466,28 @@ impl MainWindow {
         }
     }
 
-    /// Persists the zoom level for the next restart. Saving the state is a convenience, so a
-    /// failure here must not interrupt the user.
-    fn remember_zoom(&self, zoom: Zoom) {
+    /// Applies `change` to the remembered state and saves it if `change` returns true, that is,
+    /// if it changed anything, and returns that answer. The state is only a convenience for the
+    /// next start, so a failed save is ignored rather than interrupting the user.
+    fn update_state(&self, change: impl FnOnce(&mut State) -> bool) -> bool {
         let mut state = self.state.borrow_mut();
-        state.zoom = Some(zoom.percent());
-        let _ = state.save();
+        let changed = change(&mut state);
+        if changed {
+            let _ = state.save();
+        }
+        changed
+    }
+
+    /// Persists the zoom level for the next restart.
+    fn remember_zoom(&self, zoom: Zoom) {
+        self.update_state(|state| {
+            state.zoom = Some(zoom.percent());
+            true
+        });
     }
 
     /// Persists the chat pane's width for the next start while the chat is shown, so hiding the
-    /// chat or closing the window keeps the width it was dragged to. Saving the state is a
-    /// convenience, so a failure here must not interrupt the user.
+    /// chat or closing the window keeps the width it was dragged to.
     fn remember_chat_width(&self) {
         let Ok(width) = u32::try_from(self.chat_pane.width()) else {
             return;
@@ -484,53 +495,44 @@ impl MainWindow {
         if !self.chat_pane.is_visible() || width == 0 {
             return;
         }
-        let mut state = self.state.borrow_mut();
-        if state.chat_width != Some(width) {
-            state.chat_width = Some(width);
-            let _ = state.save();
-        }
+        self.update_state(|state| state.chat_width.replace(width) != Some(width));
     }
 
     /// Persists `path` at the top of **Open Recent** and its folder as the most recently used
-    /// one, so **Open…** starts there next time. Saving the state is a convenience, so a failure
-    /// here must not interrupt the user.
+    /// one, so **Open…** starts there next time.
     fn remember_file(&self, path: &Path) {
-        {
-            let mut state = self.state.borrow_mut();
+        self.update_state(|state| {
             state.remember_file(path);
-            let _ = state.save();
-        }
+            true
+        });
         self.update_recent_menu();
     }
 
     /// Persists the open file, or none for an untitled document, so the next start reopens it.
-    /// Saving the state is a convenience, so a failure here must not interrupt the user.
     fn remember_open_document(&self, path: Option<&Path>) {
-        let mut state = self.state.borrow_mut();
-        state.remember_open_document(path);
-        let _ = state.save();
+        self.update_state(|state| {
+            state.remember_open_document(path);
+            true
+        });
     }
 
     /// Persists the chat shown in the chat pane, so the next start continues it.
     fn remember_open_chat(&self, id: Option<u64>) {
-        let mut state = self.state.borrow_mut();
-        if state.open_chat != id {
-            state.open_chat = id;
-            let _ = state.save();
-        }
+        self.update_state(|state| std::mem::replace(&mut state.open_chat, id) != id);
     }
 
     /// Removes `path` from **Open Recent**, if it is there.
     fn forget_recent(&self, path: &Path) {
-        {
-            let mut state = self.state.borrow_mut();
-            if !state.recent_files.iter().any(|known| known == path) {
-                return;
+        let forgotten = self.update_state(|state| {
+            let known = state.recent_files.iter().any(|known| known == path);
+            if known {
+                state.forget_recent(path);
             }
-            state.forget_recent(path);
-            let _ = state.save();
+            known
+        });
+        if forgotten {
+            self.update_recent_menu();
         }
-        self.update_recent_menu();
     }
 
     /// Rebuilds **Open Recent** from the recent files. Each entry opens its file through
