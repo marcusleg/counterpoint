@@ -25,7 +25,7 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 
 - Rendered preview or WYSIWYG editing.
 - Multiple documents or tabs in one window.
-- Streaming replies or publishing to a platform.
+- Publishing to a platform.
 
 ## Requirements
 
