@@ -58,8 +58,9 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 
 ### Chat
 
-- R8. A chat pane beside the editor, toggled with F9, that collapses over the editor in a
-  narrow window.
+- R8. A chat pane beside the editor, toggled with F9. Dragging the divider between them resizes
+  the chat; the editor takes up the rest of the window. The chat's width is remembered, also
+  while it is hidden.
 - R9. The highlighted text is the focus of a message; with nothing highlighted, the focus is the
   whole document. The pane shows the current selection.
 - R10. **Sparring mode:** the LLM reads the document and critiques it, focusing on thinking
@@ -103,8 +104,8 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R25. The system prompt tells the model to treat the document and highlight as material, not
   instructions.
 - R26. Settings live in `$XDG_CONFIG_HOME/counterpoint/settings.json`; the last folder, recent
-  files and zoom level in `$XDG_STATE_HOME/counterpoint/state.json`. Both files are readable
-  only by the user.
+  files, zoom level and chat width in `$XDG_STATE_HOME/counterpoint/state.json`. Both files are
+  readable only by the user.
   In the Flatpak, these directories are under `~/.var/app/de.marcusleg.Counterpoint/`.
 
 ### Keyboard

@@ -17,8 +17,14 @@ use crate::ui::find_bar::FindBar;
 use crate::ui::preferences_dialog::PreferencesDialog;
 use crate::zoom::Zoom;
 
-/// Below this width the chat pane overlays the editor instead of squeezing it.
-const COLLAPSE_BELOW_SP: f64 = 900.0;
+/// The narrowest the chat pane can be dragged: wide enough for its buttons while it waits for a
+/// reply, so that sending a message does not push the divider aside.
+const CHAT_MIN_WIDTH: i32 = 300;
+/// The chat pane's width until the user drags it.
+const CHAT_DEFAULT_WIDTH: i32 = 360;
+/// A remembered chat width is restored up to this, so the window's default width still leaves
+/// the editor room.
+const CHAT_MAX_RESTORED_WIDTH: i32 = 800;
 
 pub struct MainWindow {
     window: adw::ApplicationWindow,
@@ -26,12 +32,14 @@ pub struct MainWindow {
     editor: EditorView,
     find_bar: Rc<FindBar>,
     chat: Rc<ChatPane>,
-    split: adw::OverlaySplitView,
+    /// The chat pane as laid out beside the editor; hidden to hide the chat.
+    chat_pane: adw::Bin,
     /// The button showing the current zoom percentage, e.g. "100%".
     zoom_label: gtk::Button,
     /// The editor's current zoom level.
     zoom: Cell<Zoom>,
-    /// The remembered folder, recent files and zoom level, loaded once and saved on every change.
+    /// The remembered folder, recent files, zoom level and chat width, loaded once and saved on
+    /// every change.
     state: RefCell<State>,
     /// The **Open Recent** submenu, rebuilt whenever the recent files change.
     recent_menu: gio::Menu,
@@ -84,15 +92,30 @@ impl MainWindow {
         let toasts = adw::ToastOverlay::new();
         let chat = ChatPane::new(editor.clone(), toasts.clone());
 
-        let split = adw::OverlaySplitView::builder()
-            .content(&editor_area)
-            .sidebar(chat.widget())
-            .sidebar_position(gtk::PackType::End)
-            .min_sidebar_width(280.0)
-            .max_sidebar_width(600.0)
-            .sidebar_width_fraction(0.3)
+        let state = State::load();
+        let chat_width = state.chat_width.map_or(CHAT_DEFAULT_WIDTH, |width| {
+            i32::try_from(width)
+                .unwrap_or(i32::MAX)
+                .clamp(CHAT_MIN_WIDTH, CHAT_MAX_RESTORED_WIDTH)
+        });
+        let chat_pane = adw::Bin::builder()
+            .child(chat.widget())
+            .css_classes(["sidebar-pane"])
+            .width_request(chat_width)
             .build();
-        toasts.set_child(Some(&split));
+        // Only the editor grows and shrinks with the window; the chat keeps the width the user
+        // dragged it to.
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&editor_area)
+            .end_child(&chat_pane)
+            .resize_start_child(true)
+            .resize_end_child(false)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .build();
+        start_chat_at_its_width(&paned, &chat_pane);
+        toasts.set_child(Some(&paned));
 
         let open_button = gtk::Button::builder()
             .label("_Open…")
@@ -105,8 +128,8 @@ impl MainWindow {
             .tooltip_text("Show or Hide the Chat")
             .action_name("win.toggle-chat")
             .build();
-        split
-            .bind_property("show-sidebar", &chat_toggle, "active")
+        chat_pane
+            .bind_property("visible", &chat_toggle, "active")
             .sync_create()
             .build();
 
@@ -159,15 +182,7 @@ impl MainWindow {
             .default_height(800)
             .content(&toolbar)
             .build();
-        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            COLLAPSE_BELOW_SP,
-            adw::LengthUnit::Sp,
-        ));
-        narrow.add_setter(&split, "collapsed", Some(&true.to_value()));
-        window.add_breakpoint(narrow);
 
-        let state = State::load();
         let initial_zoom = state.zoom.map(Zoom::from_percent).unwrap_or_default();
         let this = Rc::new(Self {
             window,
@@ -175,7 +190,7 @@ impl MainWindow {
             editor,
             find_bar,
             chat,
-            split,
+            chat_pane,
             zoom_label,
             zoom: Cell::new(Zoom::default()),
             state: RefCell::new(state),
@@ -340,7 +355,11 @@ impl MainWindow {
                 #[weak(rename_to = this)]
                 self,
                 move |_: &adw::ApplicationWindow, _, _| {
-                    this.split.set_show_sidebar(!this.split.shows_sidebar());
+                    let shown = this.chat_pane.is_visible();
+                    if shown {
+                        this.remember_chat_width();
+                    }
+                    this.chat_pane.set_visible(!shown);
                 }
             ))
             .build();
@@ -440,6 +459,23 @@ impl MainWindow {
         let _ = state.save();
     }
 
+    /// Persists the chat pane's width for the next start while the chat is shown, so hiding the
+    /// chat or closing the window keeps the width it was dragged to. Saving the state is a
+    /// convenience, so a failure here must not interrupt the user.
+    fn remember_chat_width(&self) {
+        let Ok(width) = u32::try_from(self.chat_pane.width()) else {
+            return;
+        };
+        if !self.chat_pane.is_visible() || width == 0 {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        if state.chat_width != Some(width) {
+            state.chat_width = Some(width);
+            let _ = state.save();
+        }
+    }
+
     /// Persists `path` at the top of **Open Recent** and its folder as the most recently used
     /// one, so **Open…** starts there next time. Saving the state is a convenience, so a failure
     /// here must not interrupt the user.
@@ -489,6 +525,7 @@ impl MainWindow {
 
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
         if self.close_confirmed.get() || !self.editor.buffer().is_modified() {
+            self.remember_chat_width();
             return glib::Propagation::Proceed;
         }
         let this = self.clone();
@@ -829,6 +866,35 @@ fn file_dialog(title: &str) -> gtk::FileDialog {
         .filters(&filters)
         .default_filter(&markdown)
         .build()
+}
+
+/// Lays the chat out at `chat_pane`'s width request, then lets it be dragged narrower.
+///
+/// Until its divider has been placed, a `gtk::Paned` gives an end child that does not resize
+/// its minimum width, so the chat starts with its intended width as its minimum. After that
+/// first layout the divider is pinned where it landed and the minimum drops to
+/// `CHAT_MIN_WIDTH`.
+fn start_chat_at_its_width(paned: &gtk::Paned, chat_pane: &adw::Bin) {
+    paned.connect_position_notify(glib::clone!(
+        #[weak]
+        chat_pane,
+        move |paned| {
+            if paned.is_position_set() || chat_pane.width_request() == CHAT_MIN_WIDTH {
+                return;
+            }
+            // The position changes while the paned is being laid out, when it must not be set.
+            glib::idle_add_local_once(glib::clone!(
+                #[weak]
+                paned,
+                #[weak]
+                chat_pane,
+                move || {
+                    paned.set_position(paned.position());
+                    chat_pane.set_width_request(CHAT_MIN_WIDTH);
+                }
+            ));
+        }
+    ));
 }
 
 #[cfg(test)]
