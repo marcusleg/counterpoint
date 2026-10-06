@@ -5,7 +5,7 @@
 //!
 //! Usage: screenshot <output.png> [--dark]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -135,6 +135,17 @@ fn main() -> ExitCode {
                 adw::ColorScheme::ForceLight
             });
             let main = MainWindow::new(app);
+            // The compositor announces its primary selection to the window soon after it is
+            // shown. GTK takes that for another app claiming PRIMARY and deselects the editor,
+            // so the paragraph is only selected once the announcement is in.
+            let primary_announced = Rc::new(Cell::new(false));
+            main.window()
+                .primary_clipboard()
+                .connect_changed(glib::clone!(
+                    #[strong]
+                    primary_announced,
+                    move |_| primary_announced.set(true)
+                ));
             // A little taller than the default, so the whole conversation fits.
             main.window().set_default_size(1200, 860);
             main.present();
@@ -143,7 +154,8 @@ fn main() -> ExitCode {
             let post = post.clone();
             let output = output.clone();
             glib::idle_add_local_once(move || {
-                *result.borrow_mut() = stage(&main, &post).and_then(|()| save(&main, &output));
+                *result.borrow_mut() =
+                    stage(&main, &post, &primary_announced).and_then(|()| save(&main, &output));
                 app.quit();
             });
         }
@@ -161,7 +173,7 @@ fn main() -> ExitCode {
 }
 
 /// Opens the post, selects a paragraph, and holds one sparring and one ghostwriting exchange.
-fn stage(main: &Rc<MainWindow>, post: &Path) -> Result<(), String> {
+fn stage(main: &Rc<MainWindow>, post: &Path, primary_announced: &Cell<bool>) -> Result<(), String> {
     main.load_path(post)?;
     let root = main.window().clone().upcast::<gtk::Widget>();
     let widgets = widgets_under(&root);
@@ -189,6 +201,7 @@ fn stage(main: &Rc<MainWindow>, post: &Path) -> Result<(), String> {
         .ok_or("no Send button")?
         .clone();
 
+    pump_until(|| primary_announced.get())?;
     let buffer = editor.buffer();
     let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
     let start = text
