@@ -2,7 +2,7 @@
 //! state.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::time::SystemTime;
 
@@ -10,8 +10,9 @@ use adw::prelude::*;
 use gtk::{gdk, glib, pango};
 
 use crate::chat::{Conversation, Entry, ProposalState};
-use crate::chat_history::{self, ChatHistory};
+use crate::chat_history;
 use crate::chat_markup;
+use crate::chat_session::{ChatSession, Outcome};
 use crate::config::Config;
 use crate::llm::{self, LlmError};
 use crate::prompt::{self, Mode};
@@ -36,18 +37,8 @@ pub struct ChatPane {
     toasts: adw::ToastOverlay,
     conversation: RefCell<Conversation>,
     mode: Cell<Mode>,
-    /// The saved chats, loaded once and saved after every change to the conversation.
-    history: RefCell<ChatHistory>,
-    /// Set when the history file exists but could not be read: chats are then kept for this
-    /// session only, so the file is never overwritten.
-    history_unreadable: bool,
-    /// Set once the user was told that the history could not be saved, until a save succeeds.
-    history_save_failed: Cell<bool>,
-    /// The open document's file, under which the conversation is saved; `None` until the
-    /// document has been saved.
-    document: RefCell<Option<PathBuf>>,
-    /// The conversation's id among the document's saved chats, once it has been saved.
-    chat_id: Cell<Option<u64>>,
+    /// Which saved chat the conversation is, saved after every change to it.
+    session: RefCell<ChatSession>,
     chat_list: gtk::DropDown,
     chat_labels: gtk::StringList,
     /// The chat behind each item of the chat list; `None` for a conversation not saved yet.
@@ -224,21 +215,13 @@ impl ChatPane {
         root.append(&input_scroller);
         root.append(&bottom);
 
-        let (history, history_unreadable) = match ChatHistory::load() {
-            Ok(history) => (history, false),
-            Err(_) => (ChatHistory::default(), true),
-        };
         let pane = Rc::new(Self {
             root,
             editor,
             toasts,
             conversation: RefCell::new(Conversation::default()),
             mode: Cell::new(Mode::Sparring),
-            history: RefCell::new(history),
-            history_unreadable,
-            history_save_failed: Cell::new(false),
-            document: RefCell::new(None),
-            chat_id: Cell::new(None),
+            session: RefCell::new(ChatSession::load()),
             chat_list,
             chat_labels,
             chat_ids: RefCell::new(Vec::new()),
@@ -278,8 +261,11 @@ impl ChatPane {
             #[weak]
             pane,
             move |_| {
-                pane.conversation.borrow_mut().reset();
-                pane.set_chat_id(None);
+                let outcome = pane
+                    .session
+                    .borrow_mut()
+                    .new_conversation(&mut pane.conversation.borrow_mut());
+                pane.publish(outcome);
                 pane.render();
             }
         ));
@@ -394,8 +380,11 @@ impl ChatPane {
     /// Starts a fresh conversation about the document just opened from `path`. Its earlier
     /// chats are in the chat list.
     pub fn open_document(self: &Rc<Self>, path: &Path) {
-        self.conversation.borrow_mut().reset();
-        self.set_document(Some(path));
+        let outcome = self
+            .session
+            .borrow_mut()
+            .open_document(path, &mut self.conversation.borrow_mut());
+        self.publish(outcome);
         self.render();
     }
 
@@ -403,24 +392,22 @@ impl ChatPane {
     /// another name, the document keeps its old chats and the conversation goes on as a new chat
     /// of the new file.
     pub fn document_saved(self: &Rc<Self>, path: &Path) {
-        if self.document.borrow().as_deref() == Some(path) {
-            return;
+        let outcome =
+            self.session
+                .borrow_mut()
+                .document_saved(path, &self.conversation.borrow(), unix_now());
+        if let Some(outcome) = outcome {
+            self.publish(outcome);
+            self.render();
         }
-        self.set_document(Some(path));
-        self.persist();
-        self.render();
     }
 
     /// Keeps the conversation for a new, untitled document, but stops saving it as a chat
     /// about the previous one.
     pub fn close_document(self: &Rc<Self>) {
-        self.set_document(None);
+        let outcome = self.session.borrow_mut().close_document();
+        self.publish(outcome);
         self.render();
-    }
-
-    fn set_document(&self, path: Option<&Path>) {
-        *self.document.borrow_mut() = path.map(Path::to_path_buf);
-        self.set_chat_id(None);
     }
 
     /// Calls `callback` with the chat's id whenever the conversation becomes another saved chat,
@@ -429,61 +416,37 @@ impl ChatPane {
         self.chat_changed.replace(Some(Box::new(callback)));
     }
 
-    fn set_chat_id(&self, id: Option<u64>) {
-        if self.chat_id.replace(id) != id {
-            if let Some(callback) = &*self.chat_changed.borrow() {
-                callback(id);
-            }
-        }
-    }
-
     /// Continues the saved chat `id` about the open document, if it still has one by that id
     /// and no reply is awaited.
     pub fn switch_to_chat(self: &Rc<Self>, id: u64) {
-        if self.chat_id.get() == Some(id) || self.conversation.borrow().is_busy() {
-            return;
+        let outcome = self
+            .session
+            .borrow_mut()
+            .switch_to_chat(id, &mut self.conversation.borrow_mut());
+        if !outcome.chat_changes.is_empty() {
+            self.publish(outcome);
+            self.render();
         }
-        let entries = {
-            let history = self.history.borrow();
-            let document = self.document.borrow();
-            document
-                .as_deref()
-                .and_then(|document| history.chat(document, id))
-                .map(|chat| chat.entries.clone())
-        };
-        let Some(entries) = entries else {
-            return;
-        };
-        self.conversation.borrow_mut().restore(entries);
-        self.set_chat_id(Some(id));
-        self.render();
     }
 
-    /// Saves the conversation as a chat about the open document, unless it is empty, waiting
-    /// for a reply, or the document has no file yet. Saving is a convenience, so a failure shows
-    /// a toast, once until a save works again.
+    /// Saves the conversation as a chat about the open document, if there is anything to save.
     fn persist(&self) {
-        let entries = {
-            let conversation = self.conversation.borrow();
-            if conversation.is_busy() || conversation.entries().is_empty() {
-                return;
+        let outcome = self
+            .session
+            .borrow_mut()
+            .persist(&self.conversation.borrow(), unix_now());
+        self.publish(outcome);
+    }
+
+    /// Tells the window about every chat the conversation became, and the user about a history
+    /// that could not be saved.
+    fn publish(&self, outcome: Outcome) {
+        if let Some(callback) = &*self.chat_changed.borrow() {
+            for id in outcome.chat_changes {
+                callback(id);
             }
-            conversation.entries().to_vec()
-        };
-        let Some(document) = self.document.borrow().clone() else {
-            return;
-        };
-        let started = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs() as i64);
-        let mut history = self.history.borrow_mut();
-        let id = history.store(&document, self.chat_id.get(), started, entries);
-        self.set_chat_id(id);
-        let saved = !self.history_unreadable && history.save().is_ok();
-        drop(history);
-        if saved {
-            self.history_save_failed.set(false);
-        } else if !self.history_save_failed.replace(true) {
+        }
+        if outcome.report_save_failure {
             self.toasts
                 .add_toast(adw::Toast::new("Could not save the chat history"));
         }
@@ -651,15 +614,12 @@ impl ChatPane {
     /// conversation if it is not saved (yet). The conversation is selected; the list can only be
     /// opened when there is another chat to choose and no reply is awaited.
     fn update_chat_list(&self, busy: bool) {
-        let current = self.chat_id.get();
+        let session = self.session.borrow();
+        let current = session.chat_id();
         let mut ids = Vec::new();
         let mut labels = Vec::new();
         {
-            let history = self.history.borrow();
-            let document = self.document.borrow();
-            let saved = document
-                .as_deref()
-                .map_or(&[][..], |document| history.chats(document));
+            let saved = session.chats();
             if !current.is_some_and(|id| saved.iter().any(|chat| chat.id == id)) {
                 let conversation = self.conversation.borrow();
                 ids.push(None);
@@ -899,6 +859,13 @@ fn preview(text: &str, max_chars: usize) -> String {
         }
     }
     out
+}
+
+/// Seconds since the Unix epoch, which dates a new chat.
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
 }
 
 fn text_label(text: &str) -> gtk::Label {
