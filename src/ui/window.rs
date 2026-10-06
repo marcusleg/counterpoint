@@ -213,6 +213,11 @@ impl MainWindow {
             this,
             move |_| this.update_title()
         ));
+        this.chat.connect_chat_changed(glib::clone!(
+            #[weak]
+            this,
+            move |id| this.remember_open_chat(id)
+        ));
         // Holds the only strong reference; GTK drops it when the window is destroyed.
         this.window.connect_close_request(glib::clone!(
             #[strong]
@@ -229,6 +234,26 @@ impl MainWindow {
     pub fn present(&self) {
         self.window.present();
         self.editor.widget().grab_focus();
+    }
+
+    /// Reopens the file that was open when the app was last used and continues the chat that
+    /// was shown with it. A file that can no longer be read is left out silently, as it is from
+    /// **Open Recent**, and the window keeps its new document.
+    pub fn restore_session(self: &Rc<Self>) {
+        let (path, chat) = {
+            let state = self.state.borrow();
+            (state.open_document.clone(), state.open_chat)
+        };
+        let Some(path) = path else {
+            return;
+        };
+        if self.load_path(&path).is_err() {
+            self.remember_open_document(None);
+            return;
+        }
+        if let Some(chat) = chat {
+            self.chat.switch_to_chat(chat);
+        }
     }
 
     /// Opens `file` once the unsaved-changes guard allows it; errors are shown in a dialog.
@@ -489,6 +514,23 @@ impl MainWindow {
         self.update_recent_menu();
     }
 
+    /// Persists the open file, or none for an untitled document, so the next start reopens it.
+    /// Saving the state is a convenience, so a failure here must not interrupt the user.
+    fn remember_open_document(&self, path: Option<&Path>) {
+        let mut state = self.state.borrow_mut();
+        state.remember_open_document(path);
+        let _ = state.save();
+    }
+
+    /// Persists the chat shown in the chat pane, so the next start continues it.
+    fn remember_open_chat(&self, id: Option<u64>) {
+        let mut state = self.state.borrow_mut();
+        if state.open_chat != id {
+            state.open_chat = id;
+            let _ = state.save();
+        }
+    }
+
     /// Removes `path` from **Open Recent**, if it is there.
     fn forget_recent(&self, path: &Path) {
         {
@@ -591,6 +633,7 @@ impl MainWindow {
         self.format.set(DiskFormat::default());
         self.modified_on_disk.set(None);
         self.update_title();
+        self.remember_open_document(None);
         self.chat.close_document();
     }
 
@@ -696,6 +739,7 @@ impl MainWindow {
     }
 
     fn set_path(&self, path: PathBuf) {
+        self.remember_open_document(Some(&path));
         *self.path.borrow_mut() = Some(path);
         self.update_title();
     }
