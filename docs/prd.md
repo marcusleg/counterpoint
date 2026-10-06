@@ -60,6 +60,8 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   document, it starts with a new one; if the file can no longer be read, it starts with a new
   document without reporting it, and the file leaves **Open Recent**. Started with a file, it
   opens that file instead.
+- R34. The window opens at the size it had when it was last closed, and maximized if it was;
+  un-maximizing it then returns it to its earlier size. Where it opens is left to the desktop.
 
 ### Chat
 
@@ -120,7 +122,7 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R25. The system prompt tells the model to treat the document and highlight as material, not
   instructions.
 - R26. Settings live in `$XDG_CONFIG_HOME/counterpoint/settings.json`; the last folder, recent
-  files, open file and chat, zoom level and chat width in
+  files, open file and chat, zoom level, chat width and window size in
   `$XDG_STATE_HOME/counterpoint/state.json`; saved chats, with the paths of the files they are
   about, in `$XDG_DATA_HOME/counterpoint/chats.json`. All three files are readable only by the
   user. The chats never leave the computer except as the conversation of the chat being

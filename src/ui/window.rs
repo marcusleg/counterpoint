@@ -16,6 +16,9 @@ use crate::ui::find_bar::FindBar;
 use crate::ui::preferences_dialog::PreferencesDialog;
 use crate::zoom::Zoom;
 
+/// The window's size until the user resizes it.
+const WINDOW_DEFAULT_SIZE: (i32, i32) = (1200, 800);
+
 /// The narrowest the chat pane can be dragged: wide enough for its buttons while it waits for a
 /// reply, so that sending a message does not push the divider aside.
 const CHAT_MIN_WIDTH: i32 = 300;
@@ -37,8 +40,8 @@ pub struct MainWindow {
     zoom_label: gtk::Button,
     /// The editor's current zoom level.
     zoom: Cell<Zoom>,
-    /// The remembered folder, recent files, zoom level and chat width, loaded once and saved on
-    /// every change.
+    /// The remembered folder, recent files, zoom level, chat width and window size, loaded once
+    /// and saved on every change.
     state: RefCell<State>,
     /// The **Open Recent** submenu, rebuilt whenever the recent files change.
     recent_menu: gio::Menu,
@@ -170,10 +173,12 @@ impl MainWindow {
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&toasts));
 
+        let (width, height) = remembered_window_size(&state).unwrap_or(WINDOW_DEFAULT_SIZE);
         let window = adw::ApplicationWindow::builder()
             .application(app)
-            .default_width(1200)
-            .default_height(800)
+            .default_width(width)
+            .default_height(height)
+            .maximized(state.window_maximized)
             .content(&toolbar)
             .build();
 
@@ -498,6 +503,25 @@ impl MainWindow {
         self.update_state(|state| state.chat_width.replace(width) != Some(width));
     }
 
+    /// Persists the window's unmaximized size and whether it is maximized, so the next start
+    /// opens the window the same way. GTK keeps the unmaximized size in the default size, so
+    /// un-maximizing the next window restores the size it had before it was maximized.
+    fn remember_window_size(&self) {
+        let (width, height) = self.window.default_size();
+        let size = u32::try_from(width)
+            .ok()
+            .zip(u32::try_from(height).ok())
+            .filter(|&(width, height)| width > 0 && height > 0);
+        let maximized = self.window.is_maximized();
+        self.update_state(|state| {
+            let size = size.or(state.window_size);
+            let changed = state.window_size != size || state.window_maximized != maximized;
+            state.window_size = size;
+            state.window_maximized = maximized;
+            changed
+        });
+    }
+
     /// Persists `path` at the top of **Open Recent** and its folder as the most recently used
     /// one, so **Open…** starts there next time.
     fn remember_file(&self, path: &Path) {
@@ -560,6 +584,7 @@ impl MainWindow {
     fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
         if self.close_confirmed.get() || !self.editor.buffer().is_modified() {
             self.remember_chat_width();
+            self.remember_window_size();
             return glib::Propagation::Proceed;
         }
         let this = self.clone();
@@ -767,6 +792,14 @@ impl MainWindow {
 }
 
 const ONLY_LOCAL_FILES: &str = "Only files on this computer can be opened and saved.";
+
+/// The window size remembered in `state`, if there is a usable one.
+fn remembered_window_size(state: &State) -> Option<(i32, i32)> {
+    let (width, height) = state.window_size?;
+    let width = i32::try_from(width).ok().filter(|&width| width > 0)?;
+    let height = i32::try_from(height).ok().filter(|&height| height > 0)?;
+    Some((width, height))
+}
 
 fn primary_menu(recent: &gio::Menu) -> gio::Menu {
     let file = gio::Menu::new();

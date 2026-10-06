@@ -308,6 +308,8 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     );
     drop(second);
     second_window.destroy();
+
+    window_size(checks, app, &window);
 }
 
 fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::Widget]) {
@@ -1345,6 +1347,76 @@ fn chat_history(
 /// A new window, as on the next start, reopens the file and continues the chat recorded in the
 /// state, or keeps its new document when that file is gone. `crlf` is open in `window`, with its
 /// earlier chat of `user_rows` messages shown.
+/// Closing a window remembers its size and whether it is maximized, and the next window opens
+/// the same way.
+fn window_size(checks: &mut Checks, app: &adw::Application, window: &gtk::Window) {
+    let state_path = state::state_path().unwrap();
+    let start = || -> (Rc<MainWindow>, gtk::Window) {
+        let next = MainWindow::new(app);
+        let next_window = app
+            .windows()
+            .into_iter()
+            .find(|w| w != window)
+            .expect("a second window was created");
+        (next, next_window)
+    };
+
+    let (next, next_window) = start();
+    checks.check(
+        next_window.default_size() == (1200, 800) && !next_window.is_maximized(),
+        "without a remembered size, a window starts 1200 by 800 pixels and unmaximized",
+    );
+    next_window.set_default_size(1000, 700);
+    // `close` only asks a window that is shown to close.
+    next_window.present();
+    pump();
+    next_window.close();
+    drop(next);
+    pump();
+    let state = State::load_from(&state_path);
+    checks.check(
+        state.window_size == Some((1000, 700)) && !state.window_maximized,
+        &format!(
+            "closing a window remembers its size, got {:?}, maximized {}",
+            state.window_size, state.window_maximized
+        ),
+    );
+
+    let (next, next_window) = start();
+    checks.check(
+        next_window.default_size() == (1000, 700) && !next_window.is_maximized(),
+        "a new window starts at the remembered size",
+    );
+    next_window.present();
+    next_window.maximize();
+    let maximized = pump_until(checks, "the window maximizes", DIALOG_TIMEOUT, || {
+        next_window.is_maximized()
+    });
+    next_window.close();
+    drop(next);
+    pump();
+    if !maximized {
+        return;
+    }
+    let state = State::load_from(&state_path);
+    checks.check(
+        state.window_size == Some((1000, 700)) && state.window_maximized,
+        &format!(
+            "closing a maximized window remembers that and its unmaximized size, got {:?}, \
+             maximized {}",
+            state.window_size, state.window_maximized
+        ),
+    );
+
+    let (next, next_window) = start();
+    checks.check(
+        next_window.is_maximized() && next_window.default_size() == (1000, 700),
+        "a new window starts maximized, keeping the size to unmaximize to",
+    );
+    drop(next);
+    next_window.destroy();
+}
+
 fn restored_session(
     checks: &mut Checks,
     app: &adw::Application,

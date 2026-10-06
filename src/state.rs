@@ -1,7 +1,8 @@
 //! Small session state remembered across restarts: the most recently used folder, the recently
-//! opened files, the open file and chat, the editor's zoom level and the chat pane's width. Kept
-//! in its own file, separate from the LLM settings in `config.rs`, since it is a convenience
-//! rather than user configuration: a missing or broken state file must never block the app.
+//! opened files, the open file and chat, the editor's zoom level, the chat pane's width and the
+//! window's size. Kept in its own file, separate from the LLM settings in `config.rs`, since it is
+//! a convenience rather than user configuration: a missing or broken state file must never block
+//! the app.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,10 @@ pub struct State {
     pub zoom: Option<u32>,
     /// The chat pane's width in pixels, as the user last left it.
     pub chat_width: Option<u32>,
+    /// The window's unmaximized width and height in pixels when it was last closed.
+    pub window_size: Option<(u32, u32)>,
+    /// Whether the window was maximized when it was last closed.
+    pub window_maximized: bool,
     /// Recently opened or saved files, newest first, at most `MAX_RECENT_FILES`.
     pub recent_files: Vec<PathBuf>,
     /// The file open in the window, reopened on the next start; `None` for an untitled document.
@@ -143,6 +148,8 @@ mod tests {
             last_folder: Some(PathBuf::from("/tmp/example")),
             zoom: Some(150),
             chat_width: Some(420),
+            window_size: Some((1400, 900)),
+            window_maximized: true,
             recent_files: vec![PathBuf::from("/tmp/example/post.md")],
             open_document: Some(PathBuf::from("/tmp/example/post.md")),
             open_chat: Some(3),
