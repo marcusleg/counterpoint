@@ -1,6 +1,7 @@
 //! The GTK user interface.
 
 pub mod chat_list;
+pub mod chat_messages;
 pub mod chat_pane;
 pub mod editor;
 mod file_labels;
