@@ -36,8 +36,8 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R2. Opening and saving an unchanged file leaves it byte for byte identical. A leading byte
   order mark is kept; a file containing any CRLF is saved with CRLF, otherwise with LF.
 - R3. Loading a file leaves nothing to undo.
-- R4. Open files from the command line, a file manager, drag and drop onto the editor, or the
-  **Open** button. Only the first command-line file is opened.
+- R4. Open files from the command line, a file manager, drag and drop onto the editor, or
+  **Open…** in the main menu. Only the first command-line file is opened.
 - R5. New, Open, Save and Save As. Before discarding unsaved changes, ask the writer. Before
   overwriting a file that changed on disk since it was opened, ask the writer. Report failed
   reads and writes.
@@ -62,6 +62,9 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   opens that file instead.
 - R34. The window opens at the size it had when it was last closed, and maximized if it was;
   un-maximizing it then returns it to its earlier size. Where it opens is left to the desktop.
+- R35. **Undo** and **Redo** buttons at the start of the header bar undo and redo changes to
+  the document, as Ctrl+Z and Ctrl+Shift+Z do in the editor, and leave the focus where it was.
+  Each is greyed out while there is nothing to undo or redo.
 
 ### Chat
 
@@ -81,7 +84,7 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   edit. Matches must not start or end inside a word. In an empty document, an empty original
   stands for the whole document, so the LLM can write a first draft.
 - R13. An applied change is selected in the editor and is a single undo step, undoable from a
-  toast or with Ctrl+Z.
+  toast, with Ctrl+Z or with the **Undo** button.
 - R14. Every request includes the current document, so the model always sees the latest text,
   plus the conversation so far. Failed, cancelled and in-flight turns are left out of the
   history.

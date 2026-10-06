@@ -102,6 +102,22 @@ impl EditorView {
         self.select(&inserted_start, &inserted_end);
     }
 
+    /// Undoes the last change, if any, and scrolls the cursor into view.
+    pub fn undo(&self) {
+        if self.buffer.can_undo() {
+            self.buffer.undo();
+            self.view.scroll_mark_onscreen(&self.buffer.get_insert());
+        }
+    }
+
+    /// Redoes the last undone change, if any, and scrolls the cursor into view.
+    pub fn redo(&self) {
+        if self.buffer.can_redo() {
+            self.buffer.redo();
+            self.view.scroll_mark_onscreen(&self.buffer.get_insert());
+        }
+    }
+
     /// Selects the text from `start` to `end` and scrolls it into view.
     pub fn select(&self, start: &gtk::TextIter, end: &gtk::TextIter) {
         self.buffer.select_range(start, end);
