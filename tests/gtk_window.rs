@@ -287,6 +287,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     chat_pane(checks, &window, &paned, &input);
 
     new_document(checks, &window, &root, &buffer);
+    undo_redo(checks, &window, &root, &buffer);
     unsaved_changes_dialog(checks, &window, &root, &buffer);
     files(checks, main, &window, &root, &buffer, work_dir);
     recent_files(checks, main, &window, &root, &buffer, work_dir);
@@ -355,7 +356,19 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
         "the zoom controls live inside the primary menu",
     );
 
-    let open = find_button(root, "_Open…").expect("Open button");
+    let icon_button = |icon: &str| {
+        widgets
+            .iter()
+            .filter_map(|w| w.downcast_ref::<gtk::Button>())
+            .find(|b| b.icon_name().as_deref() == Some(icon))
+            .cloned()
+    };
+    let undo = icon_button("edit-undo-symbolic").expect("Undo button");
+    let redo = icon_button("edit-redo-symbolic").expect("Redo button");
+    checks.check(
+        find_button(root, "_Open…").is_none(),
+        "the header bar leaves Open to the primary menu",
+    );
     let title_widget = widgets
         .iter()
         .find(|w| w.type_() == adw::WindowTitle::static_type())
@@ -368,16 +381,18 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
         .expect("chat toggle button")
         .clone();
     let position = |widget: &gtk::Widget| widgets.iter().position(|w| w == widget);
-    let open_index = position(open.upcast_ref());
+    let undo_index = position(undo.upcast_ref());
+    let redo_index = position(redo.upcast_ref());
     let title_index = position(&title_widget);
     let toggle_index = position(chat_toggle.upcast_ref());
     let menu_index = position(menu_button.upcast_ref());
     checks.check(
-        open.ancestor(adw::HeaderBar::static_type()).is_some()
-            && open_index < title_index
+        undo.ancestor(adw::HeaderBar::static_type()).is_some()
+            && undo_index < redo_index
+            && redo_index < title_index
             && title_index < toggle_index
             && toggle_index < menu_index,
-        "the header bar packs Open at the start and the chat toggle before the primary menu",
+        "the header bar packs Undo and Redo at the start and the chat toggle before the primary menu",
     );
     checks.check(
         chat_toggle.is_active(),
@@ -647,6 +662,54 @@ fn new_document(
     checks.check(
         title.title() == "Untitled",
         "win.new resets the title to \"Untitled\"",
+    );
+}
+
+fn undo_redo(
+    checks: &mut Checks,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+) {
+    let icon_button = |icon: &str| {
+        widgets_under(root)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .find(|b| b.icon_name().as_deref() == Some(icon))
+    };
+    let undo = icon_button("edit-undo-symbolic").expect("Undo button");
+    let redo = icon_button("edit-redo-symbolic").expect("Redo button");
+    checks.check(
+        !undo.is_sensitive() && !redo.is_sensitive(),
+        "Undo and Redo are greyed out with nothing to undo or redo",
+    );
+
+    buffer.insert_at_cursor("Draft");
+    checks.check(
+        undo.is_sensitive() && !redo.is_sensitive(),
+        "an edit enables Undo",
+    );
+    window
+        .activate_action("win.undo", None)
+        .expect("win.undo exists");
+    checks.check(buffer.char_count() == 0, "win.undo undoes the edit");
+    checks.check(
+        !undo.is_sensitive() && redo.is_sensitive(),
+        "undoing the only edit greys out Undo and enables Redo",
+    );
+    window
+        .activate_action("win.redo", None)
+        .expect("win.redo exists");
+    checks.check(
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .as_str()
+            == "Draft",
+        "win.redo redoes the edit",
+    );
+    checks.check(
+        undo.is_sensitive() && !redo.is_sensitive(),
+        "redoing the edit enables Undo and greys out Redo",
     );
 }
 

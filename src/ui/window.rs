@@ -114,11 +114,18 @@ impl MainWindow {
         start_chat_at_its_width(&paned, &chat_pane);
         toasts.set_child(Some(&paned));
 
-        let open_button = gtk::Button::builder()
-            .label("_Open…")
-            .use_underline(true)
-            .tooltip_text("Open a Markdown File")
-            .action_name("win.open")
+        // Clicking them leaves the focus in the editor, so writing can go on right away.
+        let undo_button = gtk::Button::builder()
+            .icon_name("edit-undo-symbolic")
+            .tooltip_text("Undo")
+            .action_name("win.undo")
+            .focus_on_click(false)
+            .build();
+        let redo_button = gtk::Button::builder()
+            .icon_name("edit-redo-symbolic")
+            .tooltip_text("Redo")
+            .action_name("win.redo")
+            .focus_on_click(false)
             .build();
         let chat_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
@@ -165,7 +172,8 @@ impl MainWindow {
 
         let title = adw::WindowTitle::new("", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
-        header.pack_start(&open_button);
+        header.pack_start(&undo_button);
+        header.pack_start(&redo_button);
         header.pack_end(&menu_button);
         header.pack_end(&chat_toggle);
 
@@ -335,6 +343,20 @@ impl MainWindow {
                 }
             ))
             .build();
+        let undo = gio::ActionEntry::builder("undo")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| this.editor.undo()
+            ))
+            .build();
+        let redo = gio::ActionEntry::builder("redo")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| this.editor.redo()
+            ))
+            .build();
         let find = gio::ActionEntry::builder("find")
             .activate(glib::clone!(
                 #[weak(rename_to = this)]
@@ -422,6 +444,8 @@ impl MainWindow {
             open_uri,
             save,
             save_as,
+            undo,
+            redo,
             find,
             find_next,
             find_previous,
@@ -431,6 +455,25 @@ impl MainWindow {
             zoom_out,
             zoom_reset,
         ]);
+        self.follow_undo_history();
+    }
+
+    /// Keeps `win.undo` and `win.redo` enabled only while the editor has something to undo or
+    /// redo.
+    fn follow_undo_history(&self) {
+        for (name, property) in [("undo", "can-undo"), ("redo", "can-redo")] {
+            if let Some(action) = self
+                .window
+                .lookup_action(name)
+                .and_downcast::<gio::SimpleAction>()
+            {
+                self.editor
+                    .buffer()
+                    .bind_property(property, &action, "enabled")
+                    .sync_create()
+                    .build();
+            }
+        }
     }
 
     /// Opens a Markdown file dropped onto the editor, through the unsaved-changes guard.
