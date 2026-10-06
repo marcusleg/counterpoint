@@ -48,6 +48,13 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   are shortened so the menu stays narrow. Choosing one opens it through the unsaved-changes
   check; a file that can no longer be read is reported and dropped from the list. The item is
   always shown, with an empty list when there are no recent files.
+- R31. **Find** (Ctrl+F, or **Find…** in the main menu) opens a find bar above the editor; a
+  selection within one line becomes the search text. Matching ignores case. While the bar is
+  open, every match is highlighted and the bar shows which match is selected and how many there
+  are, or that there are none. Typing selects the first match from the selection onward; Enter,
+  Ctrl+G or the down button selects the next match, and Shift+Enter, Ctrl+Shift+G or the up
+  button the previous one, wrapping around the document. Ctrl+G and Ctrl+Shift+G also work
+  from the editor. Escape closes the bar and returns to the editor, leaving the match selected.
 
 ### Chat
 
@@ -102,8 +109,9 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 
 ### Keyboard
 
-- R27. Shortcuts for New, Open, Save, Save As, chat pane, Preferences, shortcuts help, Quit,
-  Undo, Redo, zoom and sending messages, as listed in the README.
+- R27. Shortcuts for New, Open, Save, Save As, Find, Find Next, Find Previous, chat pane,
+  Preferences, shortcuts help, Quit, Undo, Redo, zoom and sending messages, as listed in the
+  README.
 
 ### Distribution
 

@@ -99,7 +99,12 @@ impl EditorView {
         self.buffer.end_user_action();
         let inserted_end = start;
         let inserted_start = self.buffer.iter_at_offset(offset(span.start));
-        self.buffer.select_range(&inserted_start, &inserted_end);
+        self.select(&inserted_start, &inserted_end);
+    }
+
+    /// Selects the text from `start` to `end` and scrolls it into view.
+    pub fn select(&self, start: &gtk::TextIter, end: &gtk::TextIter) {
+        self.buffer.select_range(start, end);
         self.view.scroll_mark_onscreen(&self.buffer.get_insert());
     }
 

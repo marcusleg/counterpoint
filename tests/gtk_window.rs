@@ -280,6 +280,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
 
     header_bar_and_menu(checks, &root, &widgets);
     zoom(checks, &window, &app_window, &root);
+    find(checks, &window, &root, &editor);
 
     checks.check(split.shows_sidebar(), "the chat is shown at first");
     window
@@ -332,6 +333,7 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
         "Open _Recent".to_string(),
         "_Save".to_string(),
         "Save _As…".to_string(),
+        "_Find…".to_string(),
         "_Preferences".to_string(),
         "_Keyboard Shortcuts".to_string(),
         "_About Counterpoint".to_string(),
@@ -452,6 +454,109 @@ fn zoom(
         State::load_from(&state_path).zoom == Some(110),
         "the zoom level is persisted to the state file",
     );
+}
+
+fn find(checks: &mut Checks, window: &gtk::Window, root: &gtk::Widget, editor: &sourceview5::View) {
+    let bar = widgets_under(root)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::SearchBar>().ok())
+        .expect("find bar");
+    let entry = widgets_under(&bar)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::SearchEntry>().ok())
+        .expect("find entry");
+    let buffer = editor.buffer();
+    let selected = || {
+        buffer
+            .selection_bounds()
+            .map(|(start, end)| (start.offset(), end.offset()))
+    };
+    let count_shows = |text: &str| find_label(&bar, |t| t == text).is_some();
+    buffer.set_text("One fish, two fish, red fish.\nBlue FISH.");
+    buffer.place_cursor(&buffer.start_iter());
+    checks.check(!bar.is_search_mode(), "the find bar starts closed");
+
+    window
+        .activate_action("win.find", None)
+        .expect("win.find exists");
+    checks.check(bar.is_search_mode(), "win.find opens the find bar");
+    checks.check(
+        GtkWindowExt::focus(window)
+            .is_some_and(|focus| focus.is_ancestor(&entry) || focus == entry),
+        "win.find focuses the find entry",
+    );
+
+    entry.set_text("fish");
+    pump_until(
+        checks,
+        "typing selects the first match and counts all, ignoring case",
+        DIALOG_TIMEOUT,
+        || count_shows("1 of 4"),
+    );
+    checks.check(selected() == Some((4, 8)), "the first match is selected");
+
+    window
+        .activate_action("win.find-next", None)
+        .expect("win.find-next exists");
+    checks.check(
+        selected() == Some((14, 18)) && count_shows("2 of 4"),
+        "win.find-next selects the next match",
+    );
+    entry.emit_activate();
+    checks.check(
+        selected() == Some((24, 28)) && count_shows("3 of 4"),
+        "Enter in the find entry selects the next match",
+    );
+    for _ in 0..3 {
+        window
+            .activate_action("win.find-previous", None)
+            .expect("win.find-previous exists");
+    }
+    checks.check(
+        selected() == Some((35, 39)) && count_shows("4 of 4"),
+        "win.find-previous wraps around to the last match",
+    );
+
+    entry.set_text("whale");
+    pump_until(
+        checks,
+        "a search text without matches says so",
+        DIALOG_TIMEOUT,
+        || count_shows("No matches"),
+    );
+    checks.check(
+        entry.has_css_class("error"),
+        "the find entry is marked when nothing matches",
+    );
+
+    bar.set_search_mode(false);
+    checks.check(
+        editor.has_focus(),
+        "closing the find bar returns focus to the editor",
+    );
+
+    let start = buffer.iter_at_offset(20);
+    let end = buffer.iter_at_offset(23);
+    buffer.select_range(&start, &end);
+    window
+        .activate_action("win.find", None)
+        .expect("win.find exists");
+    checks.check(
+        entry.text() == "red",
+        "win.find searches for the selected text",
+    );
+    let start = buffer.iter_at_offset(0);
+    let end = buffer.iter_at_offset(35);
+    buffer.select_range(&start, &end);
+    window
+        .activate_action("win.find", None)
+        .expect("win.find exists");
+    checks.check(
+        entry.text() == "red",
+        "win.find keeps the search text when the selection spans lines",
+    );
+    bar.set_search_mode(false);
+    pump();
 }
 
 fn new_document(

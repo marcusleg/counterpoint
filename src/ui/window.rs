@@ -13,6 +13,7 @@ use crate::document::{self, DiskFormat};
 use crate::state::State;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
+use crate::ui::find_bar::FindBar;
 use crate::ui::preferences_dialog::PreferencesDialog;
 use crate::zoom::Zoom;
 
@@ -23,6 +24,7 @@ pub struct MainWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
     editor: EditorView,
+    find_bar: Rc<FindBar>,
     chat: Rc<ChatPane>,
     split: adw::OverlaySplitView,
     /// The button showing the current zoom percentage, e.g. "100%".
@@ -73,11 +75,17 @@ impl MainWindow {
             move |buffer| editor_placeholder.set_visible(buffer.char_count() == 0)
         ));
 
+        let find_bar = FindBar::new(editor.clone());
+        let editor_area = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        editor_area.append(find_bar.widget());
+        editor_area.append(&editor_overlay);
+        editor_overlay.set_vexpand(true);
+
         let toasts = adw::ToastOverlay::new();
         let chat = ChatPane::new(editor.clone(), toasts.clone());
 
         let split = adw::OverlaySplitView::builder()
-            .content(&editor_overlay)
+            .content(&editor_area)
             .sidebar(chat.widget())
             .sidebar_position(gtk::PackType::End)
             .min_sidebar_width(280.0)
@@ -165,6 +173,7 @@ impl MainWindow {
             window,
             title,
             editor,
+            find_bar,
             chat,
             split,
             zoom_label,
@@ -291,6 +300,27 @@ impl MainWindow {
                 }
             ))
             .build();
+        let find = gio::ActionEntry::builder("find")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| this.find_bar.open()
+            ))
+            .build();
+        let find_next = gio::ActionEntry::builder("find-next")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| this.find_bar.find_next()
+            ))
+            .build();
+        let find_previous = gio::ActionEntry::builder("find-previous")
+            .activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_: &adw::ApplicationWindow, _, _| this.find_bar.find_previous()
+            ))
+            .build();
         let preferences = gio::ActionEntry::builder("preferences")
             .activate(glib::clone!(
                 #[weak(rename_to = this)]
@@ -353,6 +383,9 @@ impl MainWindow {
             open_uri,
             save,
             save_as,
+            find,
+            find_next,
+            find_previous,
             preferences,
             toggle_chat,
             zoom_in,
@@ -759,6 +792,8 @@ fn primary_menu(recent: &gio::Menu) -> gio::Menu {
     file.append_submenu(Some("Open _Recent"), recent);
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
+    let edit = gio::Menu::new();
+    edit.append(Some("_Find…"), Some("win.find"));
     let zoom = gio::Menu::new();
     let zoom_item = gio::MenuItem::new(None, None);
     zoom_item.set_attribute_value("custom", Some(&"zoom".to_variant()));
@@ -770,6 +805,7 @@ fn primary_menu(recent: &gio::Menu) -> gio::Menu {
     about.append(Some("_About Counterpoint"), Some("app.about"));
     let menu = gio::Menu::new();
     menu.append_section(None, &file);
+    menu.append_section(None, &edit);
     menu.append_section(None, &zoom);
     menu.append_section(None, &tools);
     menu.append_section(None, &about);
