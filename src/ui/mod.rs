@@ -2,6 +2,7 @@
 
 pub mod chat_pane;
 pub mod editor;
+mod file_labels;
 pub mod find_bar;
 pub mod preferences_dialog;
 pub mod window;
