@@ -1,17 +1,22 @@
 //! Conversation state behind the chat pane: displayed entries, LLM history and request lifecycle.
 
+use serde::{Deserialize, Serialize};
+
 use crate::llm::ChatMessage;
 use crate::prompt::Mode;
 use crate::proposal::{self, Edit};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProposalState {
     Pending,
     Applied,
     Rejected,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Stored in the chat history, so changes to the fields must keep older files readable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
     User {
         text: String,
@@ -141,6 +146,12 @@ impl Conversation {
         self.entries.clear();
         self.generation += 1;
         self.busy = false;
+    }
+
+    /// Starts over with the entries of an earlier conversation, as if it had never been left.
+    pub fn restore(&mut self, entries: Vec<Entry>) {
+        self.reset();
+        self.entries = entries;
     }
 
     /// Adds an error entry, unless the same error is already the last entry: clicking Apply
@@ -412,6 +423,22 @@ mod tests {
         );
         conversation.finish_request(ticket, Ok("More".to_string()));
         assert_eq!(conversation.history().len(), 4);
+    }
+
+    #[test]
+    fn restore_continues_an_earlier_conversation_and_discards_stale_replies() {
+        let earlier = conversation_with_reply(Mode::Ghostwriting, GHOST_REPLY);
+        let mut conversation = Conversation::default();
+        let ticket = conversation.begin_request(Mode::Sparring, "Other").unwrap();
+        conversation.restore(earlier.entries().to_vec());
+        assert!(!conversation.is_busy());
+        assert_eq!(conversation.entries(), earlier.entries());
+        assert_eq!(conversation.history(), earlier.history());
+        assert!(!conversation.finish_request(ticket, Ok("late".to_string())));
+        assert_eq!(
+            conversation.apply_proposal(1, "Old text."),
+            Ok("New text.".to_string())
+        );
     }
 
     #[test]

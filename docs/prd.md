@@ -25,7 +25,7 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 
 - Rendered preview or WYSIWYG editing.
 - Multiple documents or tabs in one window.
-- Streaming replies, persisted chat history, or publishing to a platform.
+- Streaming replies or publishing to a platform.
 
 ## Requirements
 
@@ -80,11 +80,22 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   history.
 - R15. **Stop** abandons a running request and returns the message to the input. Late replies to
   a stopped or reset conversation are discarded.
-- R16. **New conversation** clears the chat. Starting a new document does not.
+- R16. **New conversation** starts an empty chat; the previous one stays in the chat list
+  (R32). Starting a new document keeps the conversation, but no longer saves it as a chat about
+  the previous file.
 - R17. Chat replies render a safe Markdown subset; model output never becomes live markup.
 - R18. Enter sends, Shift+Enter inserts a new line; input method composition is committed rather
   than sent.
 - R19. When no model is configured, the pane says so and points to Preferences.
+- R32. Conversations are saved as chats about the open file, after every reply, Apply and
+  Reject, keeping the twenty newest per file. Opening a file starts a new conversation; a
+  dropdown at the top of the chat pane lists that file's earlier chats, newest first, by start
+  date and first message, and choosing one continues it, pending proposals included. The list
+  is greyed out while a reply is awaited or when there is no other chat to choose. A document
+  that has never been saved has no chats until it is: then the conversation becomes its first
+  chat, as it does a new chat of the new file after **Save As**, while the old file keeps its
+  chats. A history file that cannot be read is left untouched and chats are kept only until the
+  app closes; a failed save shows a notice.
 
 ### LLM endpoint
 
@@ -104,8 +115,10 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
 - R25. The system prompt tells the model to treat the document and highlight as material, not
   instructions.
 - R26. Settings live in `$XDG_CONFIG_HOME/counterpoint/settings.json`; the last folder, recent
-  files, zoom level and chat width in `$XDG_STATE_HOME/counterpoint/state.json`. Both files are
-  readable only by the user.
+  files, zoom level and chat width in `$XDG_STATE_HOME/counterpoint/state.json`; saved chats,
+  with the paths of the files they are about, in `$XDG_DATA_HOME/counterpoint/chats.json`. All
+  three files are readable only by the user. The chats never leave the computer except as the
+  conversation of the chat being continued (R24).
   In the Flatpak, these directories are under `~/.var/app/de.marcusleg.Counterpoint/`.
 
 ### Keyboard

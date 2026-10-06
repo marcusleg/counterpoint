@@ -2,10 +2,12 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 const ORIGINAL_TAG: &str = "original";
 const REPLACEMENT_TAG: &str = "replacement";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Edit {
     pub original: String,
     pub replacement: String,

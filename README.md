@@ -51,6 +51,12 @@ Every chat message sends the whole document text (front matter and HTML comments
 the highlighted passage and the conversation so far to the configured endpoint. With a hosted
 provider, that is a third party. Nothing else is sent: not the file name, path or any settings.
 
+Conversations are saved on your computer as chats about the file they belong to, so you can
+pick one up again from the list at the top of the chat pane. They are in
+`~/.local/share/counterpoint/chats.json` (in the Flatpak, under
+`~/.var/app/de.marcusleg.Counterpoint/data/`), readable only by you; delete the file to forget
+them all.
+
 The model is told to treat the document as the writer's material rather than as instructions,
 but a document you did not write can still contain text that steers the model. Read a proposal
 before applying it, as you would anyway.

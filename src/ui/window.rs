@@ -259,6 +259,7 @@ impl MainWindow {
         self.modified_on_disk.set(modification_time(path));
         self.remember_file(path);
         self.set_path(path.to_path_buf());
+        self.chat.open_document(path);
         Ok(())
     }
 
@@ -573,7 +574,8 @@ impl MainWindow {
     }
 
     /// Starts a new, untitled document, once the unsaved-changes guard allows it. The chat
-    /// conversation, the remembered folder and the zoom level are untouched.
+    /// conversation goes on, but is no longer saved as a chat about the previous document; the
+    /// remembered folder and the zoom level are untouched.
     async fn new_document(self: &Rc<Self>) {
         if !self.confirm_discard().await {
             return;
@@ -589,6 +591,7 @@ impl MainWindow {
         self.format.set(DiskFormat::default());
         self.modified_on_disk.set(None);
         self.update_title();
+        self.chat.close_document();
     }
 
     async fn open(self: &Rc<Self>) {
@@ -657,6 +660,7 @@ impl MainWindow {
                 self.editor.buffer().set_modified(false);
                 self.modified_on_disk.set(modification_time(&path));
                 self.remember_file(&path);
+                self.chat.document_saved(&path);
                 self.set_path(path);
                 true
             }
