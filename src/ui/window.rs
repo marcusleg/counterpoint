@@ -1,15 +1,13 @@
 //! The main window: header bar, editor, chat pane and file handling.
 
 use std::cell::{Cell, RefCell};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::SystemTime;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::document::{self, DiskFormat};
+use crate::document::OpenFile;
 use crate::state::State;
 use crate::ui::chat_pane::ChatPane;
 use crate::ui::editor::EditorView;
@@ -44,13 +42,8 @@ pub struct MainWindow {
     state: RefCell<State>,
     /// The **Open Recent** submenu, rebuilt whenever the recent files change.
     recent_menu: gio::Menu,
-    /// The open file, or `None` for a new document.
-    path: RefCell<Option<PathBuf>>,
-    /// Line endings and byte order mark of the open file, restored on save.
-    format: Cell<DiskFormat>,
-    /// The file's modification time when it was last read or written, to notice changes made
-    /// by other programs before overwriting them.
-    modified_on_disk: Cell<Option<SystemTime>>,
+    /// The file the document was read from or last saved to; a new document has none.
+    file: RefCell<OpenFile>,
     /// Set once the user has saved or discarded changes, so the window may close.
     close_confirmed: Cell<bool>,
     /// Set while the unsaved-changes alert (and a save it starts) is in progress, so another
@@ -196,9 +189,7 @@ impl MainWindow {
             zoom: Cell::new(Zoom::default()),
             state: RefCell::new(state),
             recent_menu,
-            path: RefCell::new(None),
-            format: Cell::new(DiskFormat::default()),
-            modified_on_disk: Cell::new(None),
+            file: RefCell::new(OpenFile::default()),
             close_confirmed: Cell::new(false),
             confirm_pending: Cell::new(false),
         });
@@ -278,13 +269,10 @@ impl MainWindow {
     /// Replaces the document with the file at `path`, with nothing to undo. Does not ask about
     /// unsaved changes; `open_file` does. A file that cannot be read leaves **Open Recent**.
     pub fn load_path(&self, path: &Path) -> Result<(), String> {
-        let contents = document::read_file(path).inspect_err(|_| self.forget_recent(path))?;
-        let (text, format) = document::from_disk(&contents);
-        self.format.set(format);
+        let (text, file) = OpenFile::read(path).inspect_err(|_| self.forget_recent(path))?;
         self.editor.load(&text);
-        self.modified_on_disk.set(modification_time(path));
         self.remember_file(path);
-        self.set_path(path.to_path_buf());
+        self.set_file(file);
         self.chat.open_document(path);
         Ok(())
     }
@@ -595,7 +583,7 @@ impl MainWindow {
             .heading("Save Changes?")
             .body(format!(
                 "“{}” has unsaved changes. Changes which are not saved will be permanently lost.",
-                self.document_name()
+                self.file.borrow().name()
             ))
             .default_response("save")
             .close_response("cancel")
@@ -630,9 +618,7 @@ impl MainWindow {
     /// path, LF line endings, and the title back to "Untitled".
     fn reset_document(&self) {
         self.editor.load("");
-        *self.path.borrow_mut() = None;
-        self.format.set(DiskFormat::default());
-        self.modified_on_disk.set(None);
+        self.file.replace(OpenFile::default());
         self.update_title();
         self.remember_open_document(None);
         self.chat.close_document();
@@ -660,7 +646,7 @@ impl MainWindow {
 
     /// Saves to the open file, or asks for a file name first. Returns true once saved.
     async fn save(self: &Rc<Self>) -> bool {
-        let path = self.path.borrow().clone();
+        let path = self.file.borrow().path().map(Path::to_path_buf);
         match path {
             Some(path) => self.write_to(path).await,
             None => self.save_as().await,
@@ -669,7 +655,7 @@ impl MainWindow {
 
     async fn save_as(self: &Rc<Self>) -> bool {
         let dialog = file_dialog("Save Markdown File");
-        let current = self.path.borrow().clone();
+        let current = self.file.borrow().path().map(Path::to_path_buf);
         match current {
             Some(path) => dialog.set_initial_file(Some(&gio::File::for_path(path))),
             None => {
@@ -694,18 +680,17 @@ impl MainWindow {
     /// Writes the document to `path`. If that is the open file and another program changed it
     /// since it was read, asks before overwriting those changes.
     async fn write_to(self: &Rc<Self>, path: PathBuf) -> bool {
-        let is_open_file = self.path.borrow().as_deref() == Some(path.as_path());
-        if is_open_file && !self.confirm_overwrite_changed_file(&path).await {
+        let is_open_file = self.file.borrow().path() == Some(path.as_path());
+        if is_open_file && !self.confirm_overwrite_changed_file().await {
             return false;
         }
-        let contents = document::to_disk(&self.editor.text(), self.format.get());
-        match document::write_file(&path, &contents) {
-            Ok(()) => {
+        let written = self.file.borrow().write(&path, &self.editor.text());
+        match written {
+            Ok(file) => {
                 self.editor.buffer().set_modified(false);
-                self.modified_on_disk.set(modification_time(&path));
                 self.remember_file(&path);
                 self.chat.document_saved(&path);
-                self.set_path(path);
+                self.set_file(file);
                 true
             }
             Err(message) => {
@@ -717,19 +702,15 @@ impl MainWindow {
 
     /// True unless the file changed on disk since it was read and the user chooses to keep the
     /// version on disk.
-    async fn confirm_overwrite_changed_file(self: &Rc<Self>, path: &Path) -> bool {
-        let (Some(known), Some(current)) = (self.modified_on_disk.get(), modification_time(path))
-        else {
-            return true;
-        };
-        if known == current {
+    async fn confirm_overwrite_changed_file(self: &Rc<Self>) -> bool {
+        if !self.file.borrow().changed_on_disk() {
             return true;
         }
         let dialog = adw::AlertDialog::builder()
             .heading("Overwrite Changed File?")
             .body(format!(
                 "“{}” was changed on disk after it was opened here. Saving will overwrite those changes.",
-                self.document_name()
+                self.file.borrow().name()
             ))
             .default_response("cancel")
             .close_response("cancel")
@@ -739,31 +720,22 @@ impl MainWindow {
         dialog.choose_future(Some(&self.window)).await == "overwrite"
     }
 
-    fn set_path(&self, path: PathBuf) {
-        self.remember_open_document(Some(&path));
-        *self.path.borrow_mut() = Some(path);
+    fn set_file(&self, file: OpenFile) {
+        self.remember_open_document(file.path());
+        self.file.replace(file);
         self.update_title();
     }
 
-    /// The open file's name, or "Untitled".
-    fn document_name(&self) -> String {
-        self.path
-            .borrow()
-            .as_deref()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".to_string())
-    }
-
     fn update_title(&self) {
-        let name = self.document_name();
-        let folder = self
-            .path
-            .borrow()
-            .as_deref()
-            .and_then(Path::parent)
-            .map(|folder| abbreviate_home(folder, &glib::home_dir()))
-            .unwrap_or_default();
+        let (name, folder) = {
+            let file = self.file.borrow();
+            let folder = file
+                .path()
+                .and_then(Path::parent)
+                .map(|folder| abbreviate_home(folder, &glib::home_dir()))
+                .unwrap_or_default();
+            (file.name(), folder)
+        };
         let marker = if self.editor.buffer().is_modified() {
             "• "
         } else {
@@ -793,10 +765,6 @@ impl MainWindow {
 }
 
 const ONLY_LOCAL_FILES: &str = "Only files on this computer can be opened and saved.";
-
-fn modification_time(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
-}
 
 fn primary_menu(recent: &gio::Menu) -> gio::Menu {
     let file = gio::Menu::new();
