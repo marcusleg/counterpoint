@@ -2,6 +2,7 @@
 
 pub mod chat_pane;
 pub mod editor;
+pub mod find_bar;
 pub mod preferences_dialog;
 pub mod window;
 
@@ -32,6 +33,9 @@ const SHORTCUTS: &[(&str, &[&str], &str)] = &[
     ("win.open", &["<Control>o"], "Open"),
     ("win.save", &["<Control>s"], "Save"),
     ("win.save-as", &["<Control><Shift>s"], "Save As"),
+    ("win.find", &["<Control>f"], "Find"),
+    ("win.find-next", &["<Control>g"], "Find Next"),
+    ("win.find-previous", &["<Control><Shift>g"], "Find Previous"),
     ("win.toggle-chat", &["F9"], "Show or Hide the Chat"),
     ("win.preferences", &["<Control>comma"], "Preferences"),
     (
