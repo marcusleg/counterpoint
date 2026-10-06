@@ -212,10 +212,10 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
         .find_map(|w| w.downcast_ref::<adw::StatusPage>())
         .expect("chat empty state")
         .clone();
-    let split = widgets
+    let paned = widgets
         .iter()
-        .find_map(|w| w.downcast_ref::<adw::OverlaySplitView>())
-        .expect("split view")
+        .find_map(|w| w.downcast_ref::<gtk::Paned>())
+        .expect("paned beside the editor")
         .clone();
 
     checks.check(!send.is_sensitive(), "Send starts insensitive");
@@ -282,15 +282,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     zoom(checks, &window, &app_window, &root);
     find(checks, &window, &root, &editor);
 
-    checks.check(split.shows_sidebar(), "the chat is shown at first");
-    window
-        .activate_action("win.toggle-chat", None)
-        .expect("win.toggle-chat exists");
-    checks.check(!split.shows_sidebar(), "toggle-chat hides the chat");
-    window
-        .activate_action("win.toggle-chat", None)
-        .expect("win.toggle-chat exists");
-    checks.check(split.shows_sidebar(), "toggle-chat shows the chat again");
+    chat_pane(checks, &window, &paned, &input);
 
     new_document(checks, &window, &root, &buffer);
     unsaved_changes_dialog(checks, &window, &root, &buffer);
@@ -385,6 +377,71 @@ fn header_bar_and_menu(checks: &mut Checks, root: &gtk::Widget, widgets: &[gtk::
     checks.check(
         chat_toggle.is_active(),
         "the chat toggle reflects the shown chat pane",
+    );
+}
+
+fn chat_pane(checks: &mut Checks, window: &gtk::Window, paned: &gtk::Paned, input: &gtk::TextView) {
+    let chat_pane = paned
+        .end_child()
+        .expect("the chat is the paned's end child");
+    checks.check(
+        input.is_ancestor(&chat_pane),
+        "the chat input is in the paned's end child",
+    );
+    checks.check(chat_pane.is_visible(), "the chat is shown at first");
+    if !pump_until(
+        checks,
+        "the chat is laid out at its default width and may then be dragged narrower",
+        DIALOG_TIMEOUT,
+        || paned.is_position_set() && chat_pane.width_request() == 300,
+    ) {
+        return;
+    }
+    checks.check(
+        chat_pane.width() == 360,
+        &format!("the chat starts 360 pixels wide, not {}", chat_pane.width()),
+    );
+
+    paned.set_position(paned.position() - 100);
+    pump_until(
+        checks,
+        "dragging the divider left widens the chat",
+        DIALOG_TIMEOUT,
+        || chat_pane.width() == 460,
+    );
+    paned.set_position(paned.max_position() + 100);
+    pump_until(
+        checks,
+        "dragging the divider far right stops at the chat's minimum width",
+        DIALOG_TIMEOUT,
+        || chat_pane.width() == 300,
+    );
+    paned.set_position(paned.position() - 120);
+    pump_until(
+        checks,
+        "dragging the divider back widens the chat again",
+        DIALOG_TIMEOUT,
+        || chat_pane.width() == 420,
+    );
+
+    window
+        .activate_action("win.toggle-chat", None)
+        .expect("win.toggle-chat exists");
+    checks.check(!chat_pane.is_visible(), "toggle-chat hides the chat");
+    let state_path = state::state_path().expect("state path resolves under XDG_STATE_HOME");
+    checks.check(
+        State::load_from(&state_path).chat_width == Some(420),
+        "hiding the chat persists its width to the state file",
+    );
+    window
+        .activate_action("win.toggle-chat", None)
+        .expect("win.toggle-chat exists");
+    checks.check(chat_pane.is_visible(), "toggle-chat shows the chat again");
+    pump_until(
+        checks,
+        "the chat comes back at the width it was hidden at",
+        DIALOG_TIMEOUT,
+        || chat_pane.width() == 420,
     );
 }
 
@@ -974,6 +1031,16 @@ fn chat(
     checks.check(
         find_label(root, |t| t == "Waiting for the LLM…").is_some(),
         "the busy label shows while waiting",
+    );
+    let chat_pane = widgets_under(root)
+        .iter()
+        .find_map(|w| w.downcast_ref::<gtk::Paned>())
+        .and_then(|paned| paned.end_child())
+        .expect("the chat pane");
+    let (chat_min_width, ..) = chat_pane.measure(gtk::Orientation::Horizontal, -1);
+    checks.check(
+        chat_min_width == 300,
+        &format!("waiting keeps the chat's minimum width at 300, not {chat_min_width}"),
     );
     checks.check(
         chat_rows(root, "chat-user").len() == 1,

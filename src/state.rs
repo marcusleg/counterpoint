@@ -1,5 +1,5 @@
 //! Small session state remembered across restarts: the most recently used folder, the recently
-//! opened files and the editor's zoom level. Kept in its own file, separate from the LLM
+//! opened files, the editor's zoom level and the chat pane's width. Kept in its own file, separate from the LLM
 //! settings in `config.rs`, since it is a convenience rather than user configuration: a missing
 //! or broken state file must never block the app.
 
@@ -20,6 +20,8 @@ pub const MAX_RECENT_FILES: usize = 10;
 pub struct State {
     pub last_folder: Option<PathBuf>,
     pub zoom: Option<u32>,
+    /// The chat pane's width in pixels, as the user last left it.
+    pub chat_width: Option<u32>,
     /// Recently opened or saved files, newest first, at most `MAX_RECENT_FILES`.
     pub recent_files: Vec<PathBuf>,
 }
@@ -156,6 +158,7 @@ mod tests {
         let state = State {
             last_folder: Some(PathBuf::from("/tmp/example")),
             zoom: Some(150),
+            chat_width: Some(420),
             recent_files: vec![PathBuf::from("/tmp/example/post.md")],
         };
         state.save_to(&path).unwrap();

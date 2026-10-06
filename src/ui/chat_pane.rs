@@ -138,9 +138,11 @@ impl ChatPane {
             .build();
 
         let spinner = adw::Spinner::builder().visible(false).build();
+        // Ellipsized, so that waiting for a reply does not make the chat pane wider.
         let busy_label = gtk::Label::builder()
             .xalign(0.0)
             .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .css_classes(["dim-label"])
             .build();
         let send_button = gtk::Button::builder()
