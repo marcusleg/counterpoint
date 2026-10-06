@@ -1,12 +1,16 @@
-//! The chat pane: selection chip, message list with proposal cards, input and busy state.
+//! The chat pane: chat list, selection chip, message list with proposal cards, input and busy
+//! state.
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use adw::prelude::*;
 use gtk::{gdk, glib, pango};
 
 use crate::chat::{Conversation, Entry, ProposalState};
+use crate::chat_history::{self, ChatHistory};
 use crate::chat_markup;
 use crate::config::Config;
 use crate::llm::{self, LlmError};
@@ -19,6 +23,9 @@ const NO_SELECTION: &str = "No selection — whole document";
 /// The longest selection preview; the label ellipsizes anyway, and laying out a whole selected
 /// document on every cursor move would be wasted work.
 const SELECTION_PREVIEW_CHARS: usize = 120;
+/// The longest first message naming a chat in the chat list.
+const CHAT_TITLE_CHARS: usize = 60;
+const NEW_CHAT: &str = "New Conversation";
 
 pub struct ChatPane {
     root: gtk::Box,
@@ -26,6 +33,24 @@ pub struct ChatPane {
     toasts: adw::ToastOverlay,
     conversation: RefCell<Conversation>,
     mode: Cell<Mode>,
+    /// The saved chats, loaded once and saved after every change to the conversation.
+    history: RefCell<ChatHistory>,
+    /// Set when the history file exists but could not be read: chats are then kept for this
+    /// session only, so the file is never overwritten.
+    history_unreadable: bool,
+    /// Set once the user was told that the history could not be saved, until a save succeeds.
+    history_save_failed: Cell<bool>,
+    /// The open document's file, under which the conversation is saved; `None` until the
+    /// document has been saved.
+    document: RefCell<Option<PathBuf>>,
+    /// The conversation's id among the document's saved chats, once it has been saved.
+    chat_id: Cell<Option<u64>>,
+    chat_list: gtk::DropDown,
+    chat_labels: gtk::StringList,
+    /// The chat behind each item of the chat list; `None` for a conversation not saved yet.
+    chat_ids: RefCell<Vec<Option<u64>>>,
+    /// Set while the chat list is rebuilt, so its selection changes are not taken for the user's.
+    updating_chat_list: Cell<bool>,
     config_banner: adw::Banner,
     empty_state: adw::StatusPage,
     /// Shows the empty state or the message list.
@@ -74,6 +99,14 @@ impl ChatPane {
         config_banner.connect_button_clicked(|banner| {
             let _ = banner.activate_action("win.preferences", None);
         });
+
+        let chat_labels = gtk::StringList::new(&[]);
+        let chat_list = gtk::DropDown::builder()
+            .model(&chat_labels)
+            .factory(&chat_list_factory())
+            .tooltip_text("Earlier Chats About This Document")
+            .build();
+        chat_list.update_property(&[gtk::accessible::Property::Label("Chat")]);
 
         let selection_label = gtk::Label::builder()
             .label(NO_SELECTION)
@@ -178,6 +211,7 @@ impl ChatPane {
             .margin_start(12)
             .margin_end(12)
             .build();
+        root.append(&chat_list);
         root.append(&mode);
         root.append(&config_banner);
         root.append(&stack);
@@ -185,12 +219,25 @@ impl ChatPane {
         root.append(&input_scroller);
         root.append(&bottom);
 
+        let (history, history_unreadable) = match ChatHistory::load() {
+            Ok(history) => (history, false),
+            Err(_) => (ChatHistory::default(), true),
+        };
         let pane = Rc::new(Self {
             root,
             editor,
             toasts,
             conversation: RefCell::new(Conversation::default()),
             mode: Cell::new(Mode::Sparring),
+            history: RefCell::new(history),
+            history_unreadable,
+            history_save_failed: Cell::new(false),
+            document: RefCell::new(None),
+            chat_id: Cell::new(None),
+            chat_list,
+            chat_labels,
+            chat_ids: RefCell::new(Vec::new()),
+            updating_chat_list: Cell::new(false),
             config_banner,
             empty_state,
             stack,
@@ -226,7 +273,26 @@ impl ChatPane {
             pane,
             move |_| {
                 pane.conversation.borrow_mut().reset();
+                pane.chat_id.set(None);
                 pane.render();
+            }
+        ));
+        pane.chat_list.connect_selected_notify(glib::clone!(
+            #[weak]
+            pane,
+            move |list| {
+                if pane.updating_chat_list.get() {
+                    return;
+                }
+                let id = pane
+                    .chat_ids
+                    .borrow()
+                    .get(list.selected() as usize)
+                    .copied()
+                    .flatten();
+                if let Some(id) = id {
+                    pane.switch_to_chat(id);
+                }
             }
         ));
         pane.send_button.connect_clicked(glib::clone!(
@@ -319,6 +385,89 @@ impl ChatPane {
         self.config_banner.set_revealed(revealed);
     }
 
+    /// Starts a fresh conversation about the document just opened from `path`. Its earlier
+    /// chats are in the chat list.
+    pub fn open_document(self: &Rc<Self>, path: &Path) {
+        self.conversation.borrow_mut().reset();
+        self.set_document(Some(path));
+        self.render();
+    }
+
+    /// Files the conversation under `path` once the document has been saved there. Saved under
+    /// another name, the document keeps its old chats and the conversation goes on as a new chat
+    /// of the new file.
+    pub fn document_saved(self: &Rc<Self>, path: &Path) {
+        if self.document.borrow().as_deref() == Some(path) {
+            return;
+        }
+        self.set_document(Some(path));
+        self.persist();
+        self.render();
+    }
+
+    /// Keeps the conversation for a new, untitled document, but stops saving it as a chat
+    /// about the previous one.
+    pub fn close_document(self: &Rc<Self>) {
+        self.set_document(None);
+        self.render();
+    }
+
+    fn set_document(&self, path: Option<&Path>) {
+        *self.document.borrow_mut() = path.map(Path::to_path_buf);
+        self.chat_id.set(None);
+    }
+
+    /// Continues the saved chat `id` about the open document.
+    fn switch_to_chat(self: &Rc<Self>, id: u64) {
+        if self.chat_id.get() == Some(id) || self.conversation.borrow().is_busy() {
+            return;
+        }
+        let entries = {
+            let history = self.history.borrow();
+            let document = self.document.borrow();
+            document
+                .as_deref()
+                .and_then(|document| history.chat(document, id))
+                .map(|chat| chat.entries.clone())
+        };
+        let Some(entries) = entries else {
+            return;
+        };
+        self.conversation.borrow_mut().restore(entries);
+        self.chat_id.set(Some(id));
+        self.render();
+    }
+
+    /// Saves the conversation as a chat about the open document, unless it is empty, waiting
+    /// for a reply, or the document has no file yet. Saving is a convenience, so a failure shows
+    /// a toast, once until a save works again.
+    fn persist(&self) {
+        let entries = {
+            let conversation = self.conversation.borrow();
+            if conversation.is_busy() || conversation.entries().is_empty() {
+                return;
+            }
+            conversation.entries().to_vec()
+        };
+        let Some(document) = self.document.borrow().clone() else {
+            return;
+        };
+        let started = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs() as i64);
+        let mut history = self.history.borrow_mut();
+        let id = history.store(&document, self.chat_id.get(), started, entries);
+        self.chat_id.set(id);
+        let saved = !self.history_unreadable && history.save().is_ok();
+        drop(history);
+        if saved {
+            self.history_save_failed.set(false);
+        } else if !self.history_save_failed.replace(true) {
+            self.toasts
+                .add_toast(adw::Toast::new("Could not save the chat history"));
+        }
+    }
+
     fn set_mode(&self, mode: Mode) {
         self.mode.set(mode);
         let (title, description) = match mode {
@@ -383,6 +532,7 @@ impl ChatPane {
                 .borrow_mut()
                 .finish_request(ticket, result);
             if current {
+                pane.persist();
                 pane.render();
             }
         });
@@ -415,11 +565,13 @@ impl ChatPane {
             ));
             self.toasts.add_toast(toast);
         }
+        self.persist();
         self.render();
     }
 
     fn reject(self: &Rc<Self>, index: usize) {
         self.conversation.borrow_mut().reject_proposal(index);
+        self.persist();
         self.render();
     }
 
@@ -471,6 +623,48 @@ impl ChatPane {
         self.stop_button.set_visible(busy);
         self.send_button.set_visible(!busy);
         self.update_send_button();
+        self.update_chat_list(busy);
+    }
+
+    /// Rebuilds the chat list: the open document's saved chats, newest first, after the
+    /// conversation if it is not saved (yet). The conversation is selected; the list can only be
+    /// opened when there is another chat to choose and no reply is awaited.
+    fn update_chat_list(&self, busy: bool) {
+        let current = self.chat_id.get();
+        let mut ids = Vec::new();
+        let mut labels = Vec::new();
+        {
+            let history = self.history.borrow();
+            let document = self.document.borrow();
+            let saved = document
+                .as_deref()
+                .map_or(&[][..], |document| history.chats(document));
+            if !current.is_some_and(|id| saved.iter().any(|chat| chat.id == id)) {
+                let conversation = self.conversation.borrow();
+                ids.push(None);
+                labels.push(chat_label(
+                    chat_history::first_message(conversation.entries()),
+                    None,
+                ));
+            }
+            for chat in saved {
+                ids.push(Some(chat.id));
+                labels.push(chat_label(chat.first_message(), Some(chat.started)));
+            }
+        }
+        let selected = ids
+            .iter()
+            .position(|&id| id.is_none() || id == current)
+            .unwrap_or(0);
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.updating_chat_list.set(true);
+        self.chat_labels
+            .splice(0, self.chat_labels.n_items(), &labels);
+        self.chat_list
+            .set_selected(u32::try_from(selected).expect("chat index fits in u32"));
+        self.updating_chat_list.set(false);
+        self.chat_list.set_sensitive(!busy && ids.len() > 1);
+        self.chat_ids.replace(ids);
     }
 
     fn row(self: &Rc<Self>, index: usize, entry: &Entry) -> gtk::ListBoxRow {
@@ -590,7 +784,10 @@ impl ChatPane {
         let text = if selection.trim().is_empty() {
             NO_SELECTION.to_string()
         } else {
-            format!("Selection: “{}”", preview(&selection))
+            format!(
+                "Selection: “{}”",
+                preview(&selection, SELECTION_PREVIEW_CHARS)
+            )
         };
         self.selection_label.set_text(&text);
     }
@@ -617,10 +814,54 @@ impl ChatPane {
     }
 }
 
-/// The first `SELECTION_PREVIEW_CHARS` characters of `text` with whitespace collapsed, plus an
-/// ellipsis if that cut anything off.
-fn preview(text: &str) -> String {
-    let mut out = String::with_capacity(SELECTION_PREVIEW_CHARS + 4);
+/// A chat list entry: the chat's first message, after the day and time it started if it has been
+/// saved, so that an ellipsis cuts off the message rather than the date.
+fn chat_label(first_message: Option<&str>, started: Option<i64>) -> String {
+    let title = first_message
+        .map(|message| preview(message, CHAT_TITLE_CHARS))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| NEW_CHAT.to_string());
+    let date = started
+        .and_then(|seconds| glib::DateTime::from_unix_local(seconds).ok())
+        .and_then(|date| date.format("%-d %b, %H:%M").ok());
+    match date {
+        Some(date) => format!("{date} · {title}"),
+        None => title,
+    }
+}
+
+/// Shows each chat list entry in one line, ellipsized so a long message cannot widen the pane.
+fn chat_list_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(pango::EllipsizeMode::End)
+            .max_width_chars(40)
+            .build();
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(label), Some(string)) = (
+            item.child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_text(&string.string());
+        }
+    });
+    factory
+}
+
+/// The first `max_chars` characters of `text` with whitespace collapsed, plus an ellipsis if
+/// that cut anything off.
+fn preview(text: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(max_chars + 4);
     let mut count = 0;
     for word in text.split_whitespace() {
         if !out.is_empty() {
@@ -628,7 +869,7 @@ fn preview(text: &str) -> String {
             count += 1;
         }
         for ch in word.chars() {
-            if count >= SELECTION_PREVIEW_CHARS {
+            if count >= max_chars {
                 out.push('…');
                 return out;
             }
@@ -676,10 +917,24 @@ mod tests {
 
     #[test]
     fn preview_collapses_whitespace_and_cuts_long_text() {
-        assert_eq!(preview("  Some\n  example   text "), "Some example text");
+        assert_eq!(
+            preview("  Some\n  example   text ", 120),
+            "Some example text"
+        );
         let long = "word ".repeat(100);
-        let shown = preview(&long);
+        let shown = preview(&long, SELECTION_PREVIEW_CHARS);
         assert!(shown.ends_with('…'), "{shown}");
         assert_eq!(shown.chars().count(), SELECTION_PREVIEW_CHARS + 1);
+    }
+
+    #[test]
+    fn chat_label_names_a_chat_by_its_first_message() {
+        assert_eq!(chat_label(None, None), NEW_CHAT);
+        assert_eq!(
+            chat_label(Some("  Is the\nintro long? "), None),
+            "Is the intro long?"
+        );
+        let label = chat_label(Some("Thoughts?"), Some(1_790_000_000));
+        assert!(label.ends_with(" · Thoughts?"), "{label}");
     }
 }

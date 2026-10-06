@@ -78,6 +78,7 @@ fn main() -> ExitCode {
         std::env::set_var("HOME", home.path());
         std::env::set_var("XDG_STATE_HOME", home.path().join(".local/state"));
         std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::set_var("XDG_DATA_HOME", home.path().join(".local/share"));
     }
     let blog = home.path().join("Blog");
     fs::create_dir_all(&blog).unwrap();

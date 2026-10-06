@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod chat_history;
 pub mod chat_markup;
 pub mod config;
 pub mod document;

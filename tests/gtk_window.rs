@@ -1,6 +1,6 @@
 //! GTK checks for the main window built through the public API: the chat pane, the primary menu
-//! and zoom controls, the unsaved-changes and file dialogs, saving, Open Recent, and a chat round
-//! trip against a mock endpoint. GTK must run on the thread that initialised it and only one
+//! and zoom controls, the unsaved-changes and file dialogs, saving, Open Recent, a chat round
+//! trip against a mock endpoint, and the chat history. GTK must run on the thread that initialised it and only one
 //! `gtk::Application` may run per process, so this test builds the real window inside
 //! `connect_activate`, drives it with `glib::idle_add_local_once` once it is realized, and quits
 //! the application afterwards. It needs a display; `dev/headless.sh cargo test` provides a
@@ -21,6 +21,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use common::{find_alert, find_button, find_label, pump, pump_until, widgets_under, Checks};
+use counterpoint::chat_history::{self, ChatHistory};
 use counterpoint::config::Config;
 use counterpoint::state::{self, State};
 use counterpoint::ui::window::MainWindow;
@@ -33,11 +34,12 @@ const DIALOG_TIMEOUT: Duration = Duration::from_secs(5);
 fn main() -> ExitCode {
     // Safe: the process is still single-threaded here, before `gtk::init()` below can start any
     // GTK-owned threads. A fresh temp directory keeps this test from ever touching the user's
-    // real state and settings files; it stays alive for the whole test.
-    let home = tempfile::tempdir().expect("temp dir for XDG_STATE_HOME and XDG_CONFIG_HOME");
+    // real state, settings and chat history files; it stays alive for the whole test.
+    let home = tempfile::tempdir().expect("temp dir for the XDG directories");
     unsafe {
         std::env::set_var("XDG_STATE_HOME", home.path());
         std::env::set_var("XDG_CONFIG_HOME", home.path());
+        std::env::set_var("XDG_DATA_HOME", home.path());
     }
 
     if let Err(code) = common::init_or_skip() {
@@ -291,6 +293,7 @@ fn run_checks(app: &adw::Application, main: &Rc<MainWindow>, work_dir: &Path, ch
     chat(
         checks, &window, &root, &input, &send, &stop, &mode, &buffer, &banner,
     );
+    chat_history(checks, main, &window, &root, &buffer, work_dir);
 
     let second = MainWindow::new(app);
     let second_window = app
@@ -1242,5 +1245,91 @@ fn chat(
     checks.check(
         chat_rows(root, "chat-assistant").len() == 1,
         "the late reply of a stopped request is discarded",
+    );
+}
+
+/// The chat history, starting from where `chat` left off: one conversation about `crlf.md`.
+fn chat_history(
+    checks: &mut Checks,
+    main: &Rc<MainWindow>,
+    window: &gtk::Window,
+    root: &gtk::Widget,
+    buffer: &gtk::TextBuffer,
+    work_dir: &Path,
+) {
+    let crlf = work_dir.join("crlf.md");
+    let list = widgets_under(root)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::DropDown>().ok())
+        .expect("chat list");
+    let labels = || -> Vec<String> {
+        let model = list.model().expect("the chat list has a model");
+        (0..model.n_items())
+            .filter_map(|i| model.item(i).and_downcast::<gtk::StringObject>())
+            .map(|item| item.string().to_string())
+            .collect()
+    };
+    let user_rows = chat_rows(root, "chat-user").len();
+
+    let saved = ChatHistory::load_from(&chat_history::history_path().unwrap());
+    let saved_entries = saved
+        .as_ref()
+        .ok()
+        .and_then(|history| history.chats(&crlf).first().map(|chat| chat.entries.len()));
+    checks.check(
+        saved
+            .as_ref()
+            .is_ok_and(|history| history.chats(&crlf).len() == 1)
+            && saved_entries.is_some_and(|count| count > user_rows),
+        "the conversation is saved as a chat about the open file",
+    );
+    let shown = labels();
+    checks.check(
+        shown.len() == 1 && shown[0].ends_with(" · Thoughts?") && !list.is_sensitive(),
+        &format!("the chat list names the saved chat by date and first message, got {shown:?}"),
+    );
+
+    main.load_path(&crlf).expect("crlf.md opens again");
+    pump();
+    let shown = labels();
+    checks.check(
+        chat_rows(root, "chat-user").is_empty(),
+        "opening a file starts a new conversation",
+    );
+    checks.check(
+        shown.len() == 2
+            && shown[0] == "New Conversation"
+            && list.selected() == 0
+            && list.is_sensitive(),
+        &format!("the chat list offers the file's earlier chat, got {shown:?}"),
+    );
+
+    list.set_selected(1);
+    pump();
+    checks.check(
+        chat_rows(root, "chat-user").len() == user_rows
+            && !chat_rows(root, "chat-proposal").is_empty(),
+        "choosing an earlier chat shows its conversation again",
+    );
+    checks.check(
+        labels().len() == 1 && list.selected() == 0,
+        "the empty new conversation leaves the list once an earlier chat is chosen",
+    );
+
+    buffer.set_modified(false);
+    window
+        .activate_action("win.new", None)
+        .expect("win.new exists");
+    pump_until(checks, "win.new empties the editor", DIALOG_TIMEOUT, || {
+        buffer.char_count() == 0
+    });
+    let shown = labels();
+    checks.check(
+        chat_rows(root, "chat-user").len() == user_rows,
+        "a new document keeps the conversation",
+    );
+    checks.check(
+        shown.len() == 1 && shown[0] == "Thoughts?" && !list.is_sensitive(),
+        &format!("an untitled document lists no saved chats, got {shown:?}"),
     );
 }
