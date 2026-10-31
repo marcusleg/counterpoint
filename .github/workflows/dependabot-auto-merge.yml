@@ -1,9 +1,11 @@
 name: Dependabot auto-merge
 
 # Turns on auto-merge for Dependabot's minor and patch updates, so that GitHub merges them as
-# soon as the required checks on main pass. A minor update below 1.0 is a breaking one under
-# Cargo's semver rules, so it is left for review like a major update. A pull request updating
-# several dependencies is merged only if all of them qualify.
+# soon as the required checks on main pass. A minor update of a direct dependency below 1.0 is
+# a breaking one under Cargo's semver rules, so it is left for review like a major update. An
+# indirect dependency below 1.0 is exempt: its update only changes Cargo.lock, which Cargo keeps
+# within what the crates depending on it require. A pull request updating several dependencies
+# is merged only if all of them qualify.
 on: pull_request
 
 permissions: {}
@@ -30,7 +32,8 @@ jobs:
             length > 0 and all(
               .updateType == "version-update:semver-patch"
               or (.updateType == "version-update:semver-minor"
-                  and (.prevVersion | startswith("0.") | not))
+                  and ((.dependencyType | startswith("direct") | not)
+                       or (.prevVersion | startswith("0.") | not)))
             )' <<<"$DEPENDENCIES"
           then
             gh pr merge --auto --rebase "$PR_URL"
