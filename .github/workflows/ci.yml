@@ -27,7 +27,7 @@ jobs:
     steps:
       # Pushes to main are compared with git against the commit before the push; pull
       # requests are compared through the API.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -67,7 +67,7 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False
           gtk4-devel libadwaita-devel gtksourceview5-devel gtk4 dbus-daemon git python3 gcc iproute
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Trust the checkout although the container user differs from its owner
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
