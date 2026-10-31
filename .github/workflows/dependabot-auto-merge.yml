@@ -1,0 +1,39 @@
+name: Dependabot auto-merge
+
+# Turns on auto-merge for Dependabot's minor and patch updates, so that GitHub merges them as
+# soon as the required checks on main pass. A minor update below 1.0 is a breaking one under
+# Cargo's semver rules, so it is left for review like a major update. A pull request updating
+# several dependencies is merged only if all of them qualify.
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    # Only for pushes by Dependabot itself, not for someone else's push to its branch.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: dependabot/fetch-metadata@v3
+        id: metadata
+
+      - name: Enable auto-merge for minor and patch updates
+        env:
+          DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if jq -e '
+            length > 0 and all(
+              .updateType == "version-update:semver-patch"
+              or (.updateType == "version-update:semver-minor"
+                  and (.prevVersion | startswith("0.") | not))
+            )' <<<"$DEPENDENCIES"
+          then
+            gh pr merge --auto --rebase "$PR_URL"
+          else
+            echo "Not a minor or patch update; leaving it for review."
+          fi

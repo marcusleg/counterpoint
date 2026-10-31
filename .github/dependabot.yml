@@ -1,0 +1,36 @@
+# Minor and patch updates are merged automatically once CI passes
+# (.github/workflows/dependabot-auto-merge.yml); everything else waits for review.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Updates within the ranges in Cargo.toml only touch Cargo.lock.
+    versioning-strategy: increase-if-necessary
+    # Indirect dependencies too, so that the lockfile does not fall behind.
+    allow:
+      - dependency-type: all
+    groups:
+      # The gtk-rs crates are released together and only work together.
+      gtk-rs:
+        patterns: [gtk4, libadwaita, sourceview5]
+      # Everything compatible goes into one pull request, so that the updates do not conflict
+      # in Cargo.lock. Direct dependencies below 1.0 get pull requests of their own, because
+      # for them a minor update is a breaking one and would hold back the whole group.
+      compatible:
+        patterns: ["*"]
+        exclude-patterns: [pulldown-cmark, reqwest]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # The toolchain is pinned to the rust-version in Cargo.toml.
+      - dependency-name: dtolnay/rust-toolchain
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
