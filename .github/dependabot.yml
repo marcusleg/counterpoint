@@ -6,8 +6,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Updates within the ranges in Cargo.toml only touch Cargo.lock.
-    versioning-strategy: increase-if-necessary
     # Indirect dependencies too, so that the lockfile does not fall behind.
     allow:
       - dependency-type: all
