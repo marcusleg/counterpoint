@@ -27,9 +27,9 @@ jobs:
     steps:
       # Pushes to main are compared with git against the commit before the push; pull
       # requests are compared through the API.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           # dev/headless.sh and dev/mock_llm_server.py are run by the tests; .gitattributes
@@ -45,6 +45,24 @@ jobs:
               - "dev/mock_llm_server.py"
               - ".gitattributes"
               - ".github/workflows/ci.yml"
+
+  # Fails when .github/workflows/actions.lock is out of sync with the workflows. After adding or
+  # changing an action, or a workflow that uses one, run `gh actions-lock` and commit the result.
+  # The extension version is pinned here by hand; Dependabot does not update it.
+  lockfile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: gh extension install github/gh-actions-lock --pin v0.4.1
+
+      - run: gh actions-lock --verify
 
   check:
     needs: changes
@@ -70,7 +88,7 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False
           gtk4-devel libadwaita-devel gtksourceview5-devel gtk4 dbus-daemon git python3 gcc iproute
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Trust the checkout although the container user differs from its owner
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -79,7 +97,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - run: cargo fmt --check
 

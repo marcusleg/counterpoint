@@ -19,7 +19,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: dependabot/fetch-metadata@v3
+      - uses: dependabot/fetch-metadata@v3.1.0
         id: metadata
 
       - name: Enable auto-merge for minor and patch updates

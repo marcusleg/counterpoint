@@ -154,6 +154,8 @@ choose, including a local one (Ollama, llama.cpp) or a hosted OpenAI-compatible 
   non-breaking spaces) round-trips byte for byte.
 - Q4. A mock OpenAI-compatible server (`dev/mock_llm_server.py`) covers success and failure
   paths and is pinned to the proposal format by a test.
+- Q5. Every action in the workflows is locked to a commit in `.github/workflows/actions.lock`,
+  and CI fails when the lockfile is out of sync.
 
 ## Platform
 
