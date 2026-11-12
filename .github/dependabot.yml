@@ -6,6 +6,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week after a release before proposing it, so that a compromised one is usually
+    # pulled before it reaches us. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     # Indirect dependencies too, so that the lockfile does not fall behind.
     allow:
       - dependency-type: all
@@ -25,6 +29,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week after a release before proposing it, so that a compromised one is usually
+    # pulled before it reaches us. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     ignore:
       # The toolchain is pinned to the rust-version in Cargo.toml.
       - dependency-name: dtolnay/rust-toolchain
