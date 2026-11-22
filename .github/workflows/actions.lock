@@ -6,7 +6,7 @@ workflows:
     '.github/workflows/ci.yml':
         - 'actions/checkout@v7.0.1'
         - 'dorny/paths-filter@v4.0.3'
-        - 'dtolnay/rust-toolchain@1.92'
+        - 'dtolnay/rust-toolchain@master'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/dependabot-auto-merge.yml':
         - 'dependabot/fetch-metadata@v3.1.0'
@@ -14,7 +14,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v8.0.2'
         - 'actions/upload-artifact@v7.0.2'
-        - 'dtolnay/rust-toolchain@1.92'
+        - 'dtolnay/rust-toolchain@master'
         - 'flatpak/flatpak-github-actions@v6'
 dependencies:
     'actions/checkout@v7.0.1':
@@ -42,9 +42,9 @@ dependencies:
         commit: 'sha1-ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
         owner_id: 1588572
         repo_id: 265601040
-    'dtolnay/rust-toolchain@1.92':
-        ref: '1.92'
-        commit: 'sha1-3334128f4a3bea6d0d6718ee50ff473f7f275e31'
+    'dtolnay/rust-toolchain@master':
+        ref: 'master'
+        commit: 'sha1-df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         owner_id: 1940490
         repo_id: 260749683
     'flatpak/flatpak-github-actions@v6':
