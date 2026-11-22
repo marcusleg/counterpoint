@@ -95,8 +95,13 @@ jobs:
       - name: Trust the checkout although the container user differs from its owner
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - uses: dtolnay/rust-toolchain@1.92
+      # The toolchain matches the rust-version in Cargo.toml. It is chosen with the toolchain
+      # input on master rather than with the 1.92 branch, because the action's version branches
+      # are force-pushed whenever master changes, which leaves their commit in actions.lock
+      # unreachable and fails every run. master only moves forward.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.92"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2.9.3
