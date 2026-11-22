@@ -44,7 +44,7 @@ dependencies:
         repo_id: 265601040
     'dtolnay/rust-toolchain@1.92':
         ref: '1.92'
-        commit: 'sha1-3da603d4464771f1a8c3dd4acb41f03bc8107551'
+        commit: 'sha1-3334128f4a3bea6d0d6718ee50ff473f7f275e31'
         owner_id: 1940490
         repo_id: 260749683
     'flatpak/flatpak-github-actions@v6':
